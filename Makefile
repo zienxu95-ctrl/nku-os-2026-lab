@@ -110,9 +110,9 @@ KSRCDIR		+= kern/init \
 KCFLAGS		+= $(addprefix -I,$(KINCLUDE))
 
 ifeq ($(MAKECMDGOALS),test)
-$(call add_files_cc2,$(filter-out kern/mm/best_fit_pmm.c,$(call listf_cc,$(KSRCDIR))),kernel,$(KCFLAGS))
+$(call add_files_cc2,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
 else
-$(call add_files_cc,$(filter-out kern/mm/best_fit_pmm.c,$(call listf_cc,$(KSRCDIR))),kernel,$(KCFLAGS))
+$(call add_files_cc,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
 endif
 KOBJS	= $(call read_packet,kernel libs)
 
