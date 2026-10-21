@@ -1,5 +1,7 @@
 #include <default_pmm.h>
 #include <best_fit_pmm.h>
+#include <buddy_pmm.h>
+#include <slub.h>
 #include <defs.h>
 #include <error.h>
 #include <memlayout.h>
@@ -148,6 +150,8 @@ void pmm_init(void) {
 
     // use pmm->check to verify the correctness of the alloc/free function in a pmm
     check_alloc_page();
+    buddy_selftest();
+    slub_selftest();
 
     extern char boot_page_table_sv39[];
     satp_virtual = (pte_t*)boot_page_table_sv39;
