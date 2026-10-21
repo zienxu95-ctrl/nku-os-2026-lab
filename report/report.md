@@ -116,25 +116,137 @@ init_memmap(pa2page(free_start), free_count);
 
 > 说明：以上摘录的是本次实际编写逻辑中的关键语句，不是全部函数。完整实现以 GitHub `lab2` 分支中的 `kern/mm/pmm.c` 为准；正式提交前应将标记中的 `YOUR CODE` 按指导书要求替换为组员 A 的学号，并保留 `lab2` 注释。
 
-### 3.3 `spec` 与 AI 提示词记录
+### 3.3 AI 提示词设计与使用记录
 
-本题在指导书中给出了详细的函数接口及约束，可将其整理为以下 `spec`：
+本次实验按照指导书提出的四段式提示词结构组织 AI 辅助编程请求，包括 `[PROMPT]`、`[RELY]`、`[GUARANTEE]` 和 `[SPECIFICATION]`。
 
-- 输入：无参数；内存范围来自设备树接口。
-- 输出：无返回值；设置 `va_pa_offset`、`npage`、`pages`，打印物理内存信息，注册空闲物理页。
-- 约束：正确区分虚拟地址与物理地址；保证内核和描述符数组不进入空闲区；正确按页对齐；无效设备树信息、无可用完整页应报错；不修改其他分配器的测试函数。
-- 验证：至少通过编译、QEMU 启动和当前 First-Fit 的 `check_alloc_page()`。
+其中，`PROMPT` 说明任务目标，`RELY` 指定可以使用的已有代码，`GUARANTEE` 明确必须完成的功能，`SPECIFICATION` 则描述具体实现要求与约束。
 
-**AI 交流记录说明：** 下列文字是根据实际开发问题整理的 *提示词摘要／可复用表达*，不冒充逐字聊天记录。需要老师要求的原始 prompt 时，应把实际聊天中使用过的请求原文另附到 `prompt.md`。
+以下提示词根据实际开发过程进行了规范化整理，保留了任务目标、接口要求和实际遇到的问题。
 
-| 阶段 | 提示词摘要 | 处理结果 |
-|---|---|---|
-| 阅读工程 | “我已经找到 `pmm.c` 里的 `lab2 function1 YOUR CODE`，帮我分析实现 `page_init()` 需要哪些变量和函数，最好按实验源码来说明。” | 确认设备树接口、地址偏移、`Page` 数组及空闲页注册流程 |
-| 生成初稿 | “根据这份 Lab2 的 `pmm.c` 和相关头文件，实现物理内存探测及页描述符初始化，不要动 Best-Fit 部分。” | 完成 `page_init()` 初稿 |
-| 排查编译 | “编译报错 `free_list`、`nr_free` 未定义，但错误来自 `best_fit_pmm.c`，A 只做初始化，怎样暂时避开 B 未完成的代码？” | 临时修改 Makefile，排除 Best-Fit 源文件 |
-| 修复代码 | “`UINT64_MAX` 未定义，怎样在内核编译环境里处理内存大小溢出检查？” | 改为 `((uint64_t)-1)` 表达式 |
-| 运行验证 | “QEMU 只显示 OpenSBI，没有内核信息，怎么判断是加载参数还是 `page_init()` 问题？” | 改用 `-kernel` 参数成功启动内核 |
-| 输出整理 | “内存信息把 `\\n` 打成了普通字符，怎么修复？” | 修正 C 字符串转义后输出正常 |
+#### 3.3.1 物理内存初始化功能的提示词
+
+**[PROMPT]**
+
+请基于课程提供的 RISC-V uCore Lab2 实验框架，实现物理内存探测和页面描述符初始化功能。
+
+主要修改文件为 `kern/mm/pmm.c`，在标有 `//lab2 function1 YOUR CODE` 的位置实现 `static void page_init(void)`。
+
+要求根据设备树获取物理内存范围，初始化物理页描述符数组，并将可用物理页交给当前物理内存管理器。
+
+**[RELY]**
+
+可以使用实验框架中已经提供的以下函数、变量和数据结构：
+
+- `get_memory_base()`、`get_memory_size()`：获取设备树中的物理内存信息。
+- `struct Page`、`pages`、`npage`、`nbase`：管理物理页描述符。
+- `va_pa_offset`、`PADDR()`、`pa2page()`：完成相关地址换算。
+- `PGSIZE`、`ROUNDUP()`、`ROUNDDOWN()`：进行页面大小计算和地址对齐。
+- `SetPageReserved()`、`set_page_ref()`：初始化页面状态。
+- `init_memmap()`：注册连续空闲物理页。
+- `panic()`、`cprintf()`：异常处理和运行信息输出。
+
+不得依赖尚未完成的 Best-Fit 或 Buddy System 模块。
+
+**[GUARANTEE]**
+
+必须完成 `static void page_init(void)` 函数，并保证：
+
+1. 正确获取并检查物理内存范围。
+2. 正确初始化 `va_pa_offset`、`npage`、`pages`。
+3. 为物理页描述符数组预留足够的内存空间。
+4. 保证 OpenSBI、内核和描述符数组所占空间不会被注册为空闲页。
+5. 将完整的可用物理页交给当前 `pmm_manager`。
+6. 保留原有 `lab2` 标记，不修改 First-Fit 的内置测试函数。
+
+**[SPECIFICATION]**
+
+函数接口：
+
+```c
+static void page_init(void);
+```
+
+具体实现要求：
+
+1. 使用 `get_memory_base()` 和 `get_memory_size()` 获取设备树提供的物理内存起始地址和容量。
+2. 检查内存大小是否为零、起始地址是否满足当前内核布局要求，以及地址加法是否可能溢出。
+3. 根据 `PHYSICAL_MEMORY_END` 限制可管理的内存上界。
+4. 设置虚实地址偏移，并计算物理页号范围和 `Page` 描述符数组的数量。
+5. 将描述符数组放置在内核结束位置之后，按照 `PGSIZE` 进行向上对齐。
+6. 计算描述符数组自身占用的物理内存，确定真正的空闲区域。
+7. 初始化每个页面描述符的标志位、属性和引用计数，先统一标记为保留。
+8. 对空闲区域起点向上对齐、终点向下对齐，保证只管理完整的物理页。
+9. 调用 `init_memmap(pa2page(free_start), free_count)` 注册空闲页。
+10. 输出物理内存范围、空闲内存范围和空闲页数量；遇到无效内存信息或没有完整空闲页时，通过 `panic()` 报错。
+
+验证要求：程序能够成功编译，在 QEMU 中正常启动，并通过现有 First-Fit 内存分配测试。
+
+#### 3.3.2 编译错误排查提示词
+
+**[PROMPT]**
+
+在完成 `page_init()` 后，使用 `make -j2` 编译 Lab2，出现 `free_list` 和 `nr_free` 未声明的错误，报错位置为 `kern/mm/best_fit_pmm.c`。请分析错误原因，并给出不影响后续实现 Best-Fit 的解决方案。
+
+**[RELY]**
+
+依赖当前 Makefile、`kern/mm/pmm.c`、`kern/mm/default_pmm.c`、`kern/mm/best_fit_pmm.c` 以及原有的 First-Fit 管理器接口。
+
+**[GUARANTEE]**
+
+保留 Best-Fit 源文件，不影响 `page_init()` 和 First-Fit 的独立测试。
+
+**[SPECIFICATION]**
+
+分析 Makefile 的内核源文件收集方式。
+
+**实际处理结果：**
+
+确认错误来自未完成的 Best-Fit 模块。临时修改 Makefile 的文件过滤规则后，编译继续进行。
+
+随后还遇到 `UINT64_MAX` 未定义的问题，通过改用 `((uint64_t)-1)` 完成无符号整数上界检查，最终成功生成内核镜像。
+
+#### 3.3.3 QEMU 启动问题排查提示词
+
+**[PROMPT]**
+
+Lab2 内核已经编译成功，但是执行 `make qemu` 后只显示 OpenSBI 启动信息，没有显示内核初始化和物理内存管理信息。请检查 QEMU 启动参数，分析可能的原因并给出验证方法。
+
+**[RELY]**
+
+依赖当前 Makefile、`bin/kernel`、`bin/ucore.img`、RISC-V QEMU 和原有内核启动流程。
+
+**[GUARANTEE]**
+
+不修改已经实现的物理内存初始化逻辑，不破坏原有的内核镜像，优先通过调整启动配置解决问题。
+
+**[SPECIFICATION]**
+
+检查 Makefile 中的 `-device loader` 参数，尝试使用 `-kernel bin/ucore.img` 启动内核。
+
+通过设备树输出、内核加载信息、物理内存范围和 `check_alloc_page()` 的执行结果判断启动是否成功。
+
+**实际处理结果：**
+
+将 QEMU 的内核加载方式改为 `-kernel` 后，系统成功进入 `kern_init()` 和 `pmm_init()`。
+
+运行结果显示物理内存容量为 128MB，空闲页数量为 31929，最终输出：
+
+```text
+check_alloc_page() succeeded!
+```
+
+此外，修复了 `cprintf()` 字符串换行符转义错误，使内存范围和空闲页数量能够正常分行显示。
+
+#### 3.3.4 AI 辅助开发总结
+
+本次主要使用 AI 辅助分析实验框架、梳理函数调用关系、生成 `page_init()` 的初始实现，以及排查编译和 QEMU 启动问题。
+
+在实际开发中，我根据编译器报错和 QEMU 运行结果逐步修改代码，而不是直接将生成代码视为正确结果。
+
+通过这一过程，我进一步理解了物理页描述符的作用、内存地址对齐、虚拟地址与物理地址的区别，以及 `page_init()` 和 First-Fit 分配器之间的调用关系。
+
+目前已通过当前 QEMU 环境下的初始化及 First-Fit 内置测试。其他内存布局和异常输入等边界情况仍有进一步验证空间。
 
 ### 3.4 开发中遇到的问题及解决方法
 
