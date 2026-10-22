@@ -175,7 +175,7 @@ slub_selftest(void) {
     assert(((char *)c)[0] == 0x33);
 
     slub_free(a);
-    void *a2 = slub_alloc(16);
+    void *a2 = slub_alloc(24);
     assert(a2 == a);
 
     slub_free(a2);
