@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |------|------|
 | **实验名称** | Lab 3：中断与异常处理 |
-| **小组成员** | [程浩轩]、[徐子恩]、[胡家华] |
+| **小组成员** | 2411102-程浩轩、2411112-徐子恩、[胡家华] |
 
 
 ### 小组分工
@@ -14,8 +14,8 @@
 
 | 成员 | 负责的练习/模块 |
 |------|----------------|
-| [程浩轩] | 功能模块一：Trap 上下文恢复与 Trap 入口功能（`RESTORE_ALL`、`__alltraps`） |
-| [徐子恩] | 功能模块二：中断功能（`interrupt_handler`、`exception_handler`） |
+| 2411102-程浩轩 | 功能模块一：Trap 上下文恢复与 Trap 入口功能（`RESTORE_ALL`、`__alltraps`） |
+| 2411112-徐子恩 | 功能模块二：中断处理（`interrupt_handler`） |
 | [胡家华] | 功能模块二：异常处理功能
 
 
@@ -36,15 +36,15 @@
 - 系统：Windows 11 + WSL2 Ubuntu（实验命令在 Ubuntu 中执行）。
 - 目标架构：RISC-V 64 位；使用 `riscv64-unknown-elf` 工具链。
 - 模拟环境：QEMU `qemu-system-riscv64`，OpenSBI（运行截图显示 v0.9）。
-- 实验代码：OS2026 Lab3 下载包 `lab3.zip`，解压目录 `~/OS2026-lab3/lab3_new`。
-- 主要操作：`make clean`、`make`、`make qemu`，使用 `gedit` 编辑文件。
+- 项目目录：Windows `E:\os实验\lab3`，对应 WSL `/mnt/e/os实验/lab3`；源码与 Makefile 位于 `code/`。
+- 代码在 Windows 环境检查和编辑；编译与 QEMU 运行通过 WSL Ubuntu-22.04 完成。
 
 **使用的 AI 工具**
 
 | 成员 | AI 编程工具 | 底层模型 | 备注 |
 |------|------------|---------|------|
-| [本人成员信息] | ChatGPT（聊天界面） | GPT-6 | 辅助分析 Trap 汇编、排查编译及 QEMU 启动问题 |
-| [组员二信息] | [待组员填写] | [待组员填写] | [待组员填写] |
+| 2411102-程浩轩 | ChatGPT（聊天界面） | GPT-6 | 辅助分析 Trap 汇编、排查编译及 QEMU 启动问题 |
+| 2411112-徐子恩 | Codex | GPT-6 | 核对中断接口、实现 `interrupt_handler()` 并分析编译与 QEMU 结果 |
 | [其他成员信息，如有] | [待填写] | [待填写] | [按需要删除] |
 
 ---
@@ -71,7 +71,7 @@
 
 ### 功能模块一：Trap 上下文恢复与 Trap 入口功能
 
-**负责人：** [填写本人学号-姓名]
+**负责人：** 2411102-程浩轩
 
 #### 模块功能描述
 
@@ -90,7 +90,7 @@ __alltraps:
     # 调用 trap(struct trapframe *tf)，再进入 __trapret
 ```
 
-实现文件：`kern/trap/trapentry.S`。接口函数是 `void trap(struct trapframe *tf);`，声明位于 `kern/trap/trap.h`，定义在 `kern/trap/trap.c`。
+实现文件：`code/kern/trap/trapentry.S`。接口函数是 `void trap(struct trapframe *tf);`，声明位于 `code/kern/trap/trap.h`，定义在 `code/kern/trap/trap.c`。
 
 本模块没有修改框架原有 `SAVE_ALL` 和 `struct trapframe` 的布局。`SAVE_ALL` 在栈上预留 `36 * REGBYTES` 个字节，其中前 32 个位置对应 `pushregs` 的通用寄存器槽位，后四个依次保存 `sstatus`、`sepc`、`sbadaddr`、`scause`。其中原 `sp` 经 `sscratch` 暂存后写入第 2 号槽位。
 
@@ -160,65 +160,13 @@ __trapret:
 
 其中 `mv a0, sp` 利用 RISC-V 调用约定将 Trap frame 首地址作为第一个参数交给 `trap()`；`jal trap` 进入 C 函数；返回后跳转 `__trapret`，由恢复宏和 `sret` 完成返回。`SAVE_ALL` 产生的 288 字节栈帧在 RV64 上满足调用前的栈对齐要求（前提是 Trap 入口原 `sp` 已按内核约定对齐）。
 
-#### 最终提示词
-
-以下是经过实验分析、代码实现和调试后，整理得到的最终提示词：
-
-```text
-[PROMPT]
-请协助我完成操作系统 Lab3 的功能模块一：Trap 上下文恢复与 Trap 入口功能。
-
-实验基于 RISC-V 64 位架构，主要修改 kern/trap/trapentry.S 文件。当前实验框架已经提供 SAVE_ALL 宏，需要我实现 RESTORE_ALL 宏，并完善 __alltraps 中的 C 语言函数调用过程。
-
-请先分析已有 SAVE_ALL 的寄存器保存方式和 Trap frame 的内存布局，再给出需要修改的汇编代码，并解释每条关键指令的作用。实现后还需要指导我通过编译和 QEMU 测试验证 Trap 的进入与返回过程。
-
-[RELY]
-本模块可以依赖实验框架中已经提供的以下内容：
-
-1. kern/trap/trapentry.S 中的 SAVE_ALL 宏，负责保存通用寄存器、sstatus、sepc、sbadaddr 和 scause。
-2. kern/trap/trap.h 中的 struct pushregs 和 struct trapframe 结构体，用于规定寄存器保存顺序和 Trap frame 的内存布局。
-3. kern/trap/trap.c 中的 trap(struct trapframe *tf) 函数，作为汇编代码进入 C 语言 Trap 处理流程的接口。
-4. libs/riscv.h 中的 REGBYTES、LOAD、STORE 等宏，以及 RISC-V CSR 相关定义。
-5. 已有的 __trapret 标签和 sret 指令，用于完成 Trap 返回。
-6. 现有 Makefile、RISC-V 编译工具链和 QEMU 环境，用于编译和运行测试。
-
-[GUARANTEE]
-本模块必须完成以下功能：
-
-1. 实现 RESTORE_ALL 宏，正确恢复 Trap 发生前保存的通用寄存器状态。
-2. 恢复 sstatus 和 sepc，确保处理器能够返回正确的执行位置。
-3. 完善 __alltraps，将保存的 Trap frame 地址作为参数传递给 trap() 函数。
-4. 在 trap() 返回后进入 __trapret，完成寄存器恢复，并通过 sret 返回原执行流程。
-5. 保证模块一与后续的 interrupt_handler()、exception_handler() 能够正确衔接。
-6. 完成代码编译和基本 Trap 运行测试，验证中断处理后能够正常返回。
-
-本模块只负责 Trap 上下文管理和入口功能，不直接实现模块二的具体中断与异常处理逻辑。
-
-[SPECIFICATION]
-1. RESTORE_ALL 必须严格按照 SAVE_ALL 的寄存器保存偏移进行恢复，不允许自行改变 Trap frame 的数据布局。
-2. SAVE_ALL 使用 36 个 REGBYTES 保存上下文，其中前 32 个位置对应通用寄存器，后 4 个位置分别保存 status、epc、badvaddr 和 cause。
-3. 恢复 sstatus 和 sepc 时，可以先通过 t0 临时寄存器读取对应栈位置，再使用 csrw 指令写回 CSR。
-4. x0 为恒零寄存器，不需要恢复；t0 在使用完毕后恢复其原始值；sp 必须最后恢复，防止提前改变栈指针导致其他寄存器读取错误。
-5. __alltraps 首先调用已有的 SAVE_ALL，再使用 mv a0, sp 将 Trap frame 地址放入第一个参数寄存器，随后使用 jal trap 调用 C 语言处理函数。
-6. trap() 返回后通过 j __trapret 进入统一恢复流程，执行 RESTORE_ALL 和 sret。
-7. 不修改 SAVE_ALL、struct trapframe 和 trap() 的原有接口，不修改模块二负责的具体处理逻辑。
-8. 编译阶段使用 make clean 和 make 检查代码，运行阶段使用 make qemu，并利用临时测试处理函数验证连续时钟中断及 Trap 返回。
-9. 测试代码需要与正式实验代码分开保存，避免影响后续模块二的实现与合并。
-10. 保留实验框架中标记的 lab3 注释，便于最终检查和提交。
-```
-
-
-#### 实现迭代过程
+模块一的 Spec 以现有 `SAVE_ALL` 和 `struct trapframe` 为约束：恢复偏移必须逐项对应，`x0` 不需恢复，暂用的 `t0` 和原 `sp` 应最后恢复；`sstatus`、`sepc` 写回后由 `sret` 完成返回，不改变模块二接口。面向 AI 的 Prompt 先提供 `trapentry.S`、`trap.h`、`trap.c` 及 `riscv.h` 的真实定义，再要求核对寄存器槽位、调用约定和栈对齐，并把汇编检查、链接与 QEMU 运行分别验证。这一设计避免只凭函数名或未经核对的偏移生成恢复代码。
 
 本模块经历了代码实现、工程依赖修复和运行验证三个阶段。下面只记录实际对话中发生过的操作和现象。
-
-##### 第一次迭代：实现 Trap 恢复及入口
 
 **实施过程：** 查看 `trapentry.S`、`trap.h`、`trap.c`，发现框架已提供 `SAVE_ALL`，但 `RESTORE_ALL` 和 `__alltraps` 仍留有 `#lab3 function1 YOUR CODE`。依据寄存器保存位置实现恢复代码，并在 `__alltraps` 中加入 `mv a0, sp`、`jal trap` 和 `j __trapret`。
 
 **初步结果：** `make -k` 输出中出现 `+ cc kern/trap/trapentry.S`，该汇编文件未报错，说明通过汇编检查；但整个项目尚未成功链接，不能据此认定运行正确。
-
-##### 第二次迭代：解决编译与启动依赖问题
 
 **遇到的问题及处理：**
 
@@ -228,8 +176,6 @@ __trapret:
 4. 首次运行 QEMU 只显示 OpenSBI，没有显示内核日志。检查 Makefile 后，将 `qemu` 目标中的 `-device loader,file=$(UCOREIMG),addr=0x80200000` 改为 `-kernel $(UCOREIMG)`，此后进入内核并看到 `check_alloc_page() succeeded!`、`++ setup timer interrupts`。
 
 以上是为了恢复 Lab3 可测试环境而进行的依赖调整，**不是模块一的主要功能实现**；最终合并时应由小组共同审核其保留方式。
-
-##### 第三次迭代：临时测试桩与 Trap 返回验证
 
 **测试方法：** 在临时 `trap_test_stub.c` 中收到时钟中断后调用 `clock_set_next_event()` 安排下一次中断，同时累加 `ticks` 并打印前三次中断。测试版 `kern_init()` 在正常执行循环中检查中断处理时设定的 `trap_test_seen` 标记，打印返回成功信息。这个标记是在 Trap 外部的正常执行流中观察到的，比单纯在中断处理函数内部打印更能说明 Trap 返回成功。
 
@@ -253,48 +199,93 @@ Module1 TEST: timer interrupt 3
 
 ---
 
-### 功能模块二：中断与异常处理功能
+### 功能模块二：中断处理
 
-**负责人：** [组员二学号-姓名]
+**负责人：** 2411112-徐子恩
 
-#### 模块功能描述
+本模块只实现 `code/kern/trap/trap.c` 中的 `interrupt_handler(struct trapframe *tf)`。胡家华负责的 `exception_handler()` 属于异常处理模块，当前尚未合并，因此本节不描述其实现或声称异常路径已通过测试。Trap 入口保存现场后调用 `trap()`；`trap_dispatch()` 将 `tf->cause` 转为有符号整数，利用最高位区分中断与同步异常，再把中断交给本函数。处理结束后沿队友一的 `__trapret` 路径恢复现场。
 
-**需要实现/修改的函数：**
+本练习的 Spec 是持续响应 Supervisor Timer Interrupt：每次重设下一事件，`ticks` 恰好加一，每 100 次输出一次框架规定的 `100 ticks`，累计输出 10 次后通过 SBI 关机；其他已定义 IRQ 应有明确日志，未知 IRQ 应打印完整 Trap frame。Prompt 设计先要求 AI 搜索 `clock_set_next_event()`、`ticks`、`TICK_NUM`、IRQ 宏、`sbi_shutdown()` 及 `trap_dispatch()` 的实际定义，再限制修改范围和验证结论。检查发现仓库没有 `SHUTDOWN_AFTER`，于是只在 `trap.c` 补充 `#define SHUTDOWN_AFTER 10`，并包含已有的 `sbi.h`；没有新建重复的 tick 全局变量。
+
+核心函数按实际执行路径分为以下三段展示。三段代码按顺序连接，即为当前源码中的完整 `interrupt_handler()`，这里仅为便于说明而分开展示。
+
+**原因解析与时钟中断。** `tf->cause` 是 64 位 `uintptr_t`；`scause` 的最高位表示中断，低位才是原因编号。因此先清除第 63 位，再与 `IRQ_S_TIMER` 比较。每次收到时钟中断，先设置下一次事件，再将全局 `ticks` 加一；`print_ticks()` 只在 100 的整数倍调用。`printed_count` 仅在输出后增加，因此第 10 次输出恰好发生于第 1000 次 tick，随后调用 SBI 关机接口。
 
 ```c
-void interrupt_handler(struct trapframe *tf);
-void exception_handler(struct trapframe *tf);
+void interrupt_handler(struct trapframe *tf) {
+    uintptr_t irq = tf->cause & (((uintptr_t)1 << 63) - 1);
+    static size_t printed_count = 0;
+
+    switch (irq) {
+    case IRQ_S_TIMER:
+        clock_set_next_event();
+        ticks++;
+        if (ticks % TICK_NUM == 0) {
+            print_ticks();
+            printed_count++;
+            if (printed_count >= SHUTDOWN_AFTER) {
+                sbi_shutdown();
+            }
+        }
+        break;
 ```
 
-**功能说明：** [待组员二填写：中断/异常分类、时钟中断计数与重设、非法指令及断点异常的处理与 `epc` 更新规则。]
+**其他已定义的中断。** 其余 IRQ 按 `riscv.h` 中已有的类型分别输出日志。这里不引入新的 IRQ 宏，也不改变时钟计数。
 
-#### 最终提示词
+```c
+    case IRQ_U_SOFT:
+        cprintf("User software interrupt\n");
+        break;
+    case IRQ_S_SOFT:
+        cprintf("Supervisor software interrupt\n");
+        break;
+    case IRQ_H_SOFT:
+        cprintf("Hypervisor software interrupt\n");
+        break;
+    case IRQ_M_SOFT:
+        cprintf("Machine software interrupt\n");
+        break;
+    case IRQ_U_TIMER:
+        cprintf("User timer interrupt\n");
+        break;
+    case IRQ_H_TIMER:
+        cprintf("Hypervisor timer interrupt\n");
+        break;
+    case IRQ_M_TIMER:
+        cprintf("Machine timer interrupt\n");
+        break;
+    case IRQ_U_EXT:
+        cprintf("User external interrupt\n");
+        break;
+    case IRQ_S_EXT:
+        cprintf("Supervisor external interrupt\n");
+        break;
+    case IRQ_H_EXT:
+        cprintf("Hypervisor external interrupt\n");
+        break;
+    case IRQ_M_EXT:
+        cprintf("Machine external interrupt\n");
+        break;
+    case IRQ_COP:
+        cprintf("Coprocessor interrupt\n");
+        break;
+    case IRQ_HOST:
+        cprintf("Host interrupt\n");
+        break;
+```
 
-[待组员二粘贴真实 AI 交流形成的最终提示词。]
+**未知中断。** 对未匹配的原因先输出编号，再用 `print_trapframe(tf)` 输出现场，避免静默忽略。末尾关闭 `switch` 和函数。
 
-#### 实现迭代过程
+```c
+    default:
+        cprintf("Unknown interrupt: cause %d\n", (int)irq);
+        print_trapframe(tf);
+        break;
+    }
+}
+```
 
-##### 第一次迭代
-
-[待组员二填写实际遇到的问题、修改策略和验证结果。]
-
-##### 第二次迭代（如有）
-
-[待组员二填写。]
-
----
-
-### 练习：[其他练习标题，如有]
-
-**负责人：** [填写]
-
-[如课程要求还有其他练习，由对应组员补充；无则删除这一小节。]
-
-### Challenge：[Challenge 标题，如有]
-
-**负责人：** [填写]
-
-[按实际完成情况补充；未做则明确说明或删除。]
+AI 辅助实现中最关键的两个问题是原因编码和验证边界。最初若仅按 IRQ 宏值判断，会忽略 `scause` 的中断位；对照 `trap_dispatch()` 和 `riscv.h` 后改为掩去最高位。正式 `make` 又在链接时报告 `undefined reference to exception_handler`，但 `trap.c` 和 `trapentry.S` 已完成编译；该符号属于尚未合并的异常模块，不能为消除报错而改写队友代码。为验证本模块，仅在 WSL `/tmp` 编译临时异常处理桩并独立链接测试镜像，仓库源码没有加入测试桩。
 
 ---
 
@@ -314,13 +305,11 @@ void exception_handler(struct trapframe *tf);
 
 **结论：** 模块一已通过基础运行测试；尚未进行逐寄存器恢复值检查。临时测试处理函数只用于模块一验证，不计入组员二的正式实现。
 
-### 5.3 模块二及整组联合测试
+### 5.3 中断处理模块与整组联合验证
 
-[待组员二补充：时钟中断预期次数、非法指令/断点异常的输出、`epc` 更新、异常返回等截图和分析。]
+在 WSL Ubuntu-22.04 的 `code/` 目录执行 `make`，`trap.c` 与 `trapentry.S` 均编译通过；正式链接停在 `undefined reference to exception_handler`。这说明当前中断模块没有 C 语法或宏定义错误，但由于异常处理尚未合并，不能称整组内核已完成构建。
 
-**最终 `make qemu` 截图：** [合并正式模块二代码后添加]
-
-**`make grade` 结果：** [先确认此工程是否提供该目标；未实际运行前不可写“通过”]
+为隔离该依赖，仅在 WSL `/tmp` 中编译临时异常处理桩，按项目入口对象顺序独立链接并以 QEMU 启动测试镜像。内核输出 `++ setup timer interrupts`，随后连续出现 10 次 `100 ticks`，进程正常退出，表明该测试条件下时钟事件能够重复设置，Trap 能够多次返回，且达到预设输出次数后调用了关机接口。临时桩不属于正式代码，测试也不覆盖异常处理路径或全部寄存器值的逐项校验。正式 `make qemu` 和 `make grade` 尚未在完整团队代码上通过，需待 `exception_handler()` 合并后再进行联合验证。
 
 ---
 
@@ -336,10 +325,10 @@ void exception_handler(struct trapframe *tf);
 4. **中断与异常的分工。** 模块一负责通用进入/返回，模块二决定怎样处理具体原因。这样可以避免每种异常重复编写保存和恢复流程。
 5. **理论中重要、但本实验暂未完整涉及的内容。** 例如用户态与内核态完整切换、多核中断路由、复杂设备中断优先级和抢占式调度，都需要更完整的内核机制支持。
 
-**组员二补充：** [结合模块二的处理流程补充对异常分类、`epc` 调整及定时器中断的理解。]
+**中断处理的进一步理解：** 中断通常由外部事件异步触发，时钟处理完毕后应返回被打断的指令流；同步异常由当前指令触发，是否调整 `epc` 取决于异常类型和处理策略，属于后续异常模块。Trap frame 保存的是进入处理程序时的现场，`ticks` 则是内核维护的时钟事件计数，二者用途不同。定时器重新编程与中断使能共同决定时钟是否能持续触发；本实验使用单核、单一时钟事件，没有实现进程调度、多核中断分发、设备中断优先级或用户态上下文切换，这些机制还需要在现有 Trap 通路之上扩展。
 
 ### AI 协作开发的经验
 
 本次实验中，我主要利用 AI 辅助阅读 `SAVE_ALL` 和 `struct trapframe` 的对应关系，并逐步定位编译、链接、QEMU 启动等问题。比较有帮助的做法是每次先提供真实的文件内容和终端报错，再针对单个问题修改，而不是直接替换整个工程。特别是在模块二尚未完成时，使用临时测试桩隔离问题，可以先验证模块一的基本流程。不过 AI 给出的汇编和工程修改仍需要与真实代码核对，不能只根据“编译成功”判断正确，还必须观察运行输出。
 
-**组员二补充：** [填写本人的 AI 协作心得及最终小组总结。]
+徐子恩在实现中断模块时先让 AI 对照真实源码寻找接口和常量，再核查 `scause` 的最高位语义及计数边界。对编译通过、链接失败和临时桩下 QEMU 运行成功分别记录，避免将局部验证写成完整实验通过。待异常处理模块合并后，小组仍需完成正式内核的联合测试。
