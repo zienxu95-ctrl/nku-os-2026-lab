@@ -84,8 +84,15 @@ void print_regs(struct pushregs *gpr) {
 
 //lab3 function2 YOUR CODE
 
-// Temporary declarations for module 2
-void interrupt_handler(struct trapframe *tf);
+static inline void advance_sepc(struct trapframe *tf) {
+    uint16_t insn = *(uint16_t *)tf->epc;
+    if ((insn & 0x3) != 0x3) {
+        tf->epc += 2;
+    } else {
+        tf->epc += 4;
+    }
+}
+
 void interrupt_handler(struct trapframe *tf) {
     uintptr_t irq = tf->cause & (((uintptr_t)1 << 63) - 1);
     static size_t printed_count = 0;
@@ -147,7 +154,26 @@ void interrupt_handler(struct trapframe *tf) {
         break;
     }
 }
-void exception_handler(struct trapframe *tf);
+
+void exception_handler(struct trapframe *tf) {
+    switch (tf->cause) {
+    case CAUSE_ILLEGAL_INSTRUCTION:
+        cprintf("Exception type: Illegal instruction\n");
+        cprintf("Illegal instruction at 0x%016lx\n", tf->epc);
+        advance_sepc(tf);
+        break;
+    case CAUSE_BREAKPOINT:
+        cprintf("Exception type: Breakpoint\n");
+        cprintf("Breakpoint at 0x%016lx\n", tf->epc);
+        advance_sepc(tf);
+        break;
+    default:
+        cprintf("Unhandled exception: cause %d\n", (int)tf->cause);
+        print_trapframe(tf);
+        break;
+    }
+}
+
 static inline void trap_dispatch(struct trapframe *tf) {
     if ((intptr_t)tf->cause < 0) {
         // interrupts

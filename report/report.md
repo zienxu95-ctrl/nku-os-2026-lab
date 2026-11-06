@@ -5,18 +5,17 @@
 | 项目 | 内容 |
 |------|------|
 | **实验名称** | Lab 3：中断与异常处理 |
-| **小组成员** | 2411102-程浩轩、2411112-徐子恩、[胡家华] |
+| **小组成员** | 2411102-程浩轩、2411112-徐子恩、2410935-胡家华 |
+| **提交分支** | `lab3` |
 
 
 ### 小组分工
-
-**练习如何分工？**
 
 | 成员 | 负责的练习/模块 |
 |------|----------------|
 | 2411102-程浩轩 | 功能模块一：Trap 上下文恢复与 Trap 入口功能（`RESTORE_ALL`、`__alltraps`） |
 | 2411112-徐子恩 | 功能模块二：中断处理（`interrupt_handler`） |
-| [胡家华] | 功能模块二：异常处理功能
+| 2410935-胡家华 | 功能模块二：异常处理（`exception_handler`）；迁入 Lab2 的 `page_init` / Best-Fit 依赖 |
 
 
 
@@ -36,8 +35,8 @@
 - 系统：Windows 11 + WSL2 Ubuntu（实验命令在 Ubuntu 中执行）。
 - 目标架构：RISC-V 64 位；使用 `riscv64-unknown-elf` 工具链。
 - 模拟环境：QEMU `qemu-system-riscv64`，OpenSBI（运行截图显示 v0.9）。
-- 项目目录：Windows `E:\os实验\lab3`，对应 WSL `/mnt/e/os实验/lab3`；源码与 Makefile 位于 `code/`。
-- 代码在 Windows 环境检查和编辑；编译与 QEMU 运行通过 WSL Ubuntu-22.04 完成。
+- 项目目录：Windows `C:\Users\hujiahua\大三上\操作系统\操作系统实验\nku-os-2026-lab-lab3`，对应 WSL `/mnt/c/Users/hujiahua/大三上/操作系统/操作系统实验/nku-os-2026-lab-lab3`；源码与 Makefile 位于 `code/`。
+- 代码在 Windows 环境检查和编辑；编译与 QEMU 运行通过 WSL Ubuntu 完成。
 
 **使用的 AI 工具**
 
@@ -45,7 +44,7 @@
 |------|------------|---------|------|
 | 2411102-程浩轩 | ChatGPT（聊天界面） | GPT-6 | 辅助分析 Trap 汇编、排查编译及 QEMU 启动问题 |
 | 2411112-徐子恩 | Codex | GPT-6 | 核对中断接口、实现 `interrupt_handler()` 并分析编译与 QEMU 结果 |
-| [其他成员信息，如有] | [待填写] | [待填写] | [按需要删除] |
+| 2410935-胡家华 | Cursor | Composer | 实现 `exception_handler()`，补齐 Lab2 依赖，整理本地 `lab3` 工程与报告 |
 
 ---
 
@@ -285,7 +284,53 @@ void interrupt_handler(struct trapframe *tf) {
 }
 ```
 
-AI 辅助实现中最关键的两个问题是原因编码和验证边界。最初若仅按 IRQ 宏值判断，会忽略 `scause` 的中断位；对照 `trap_dispatch()` 和 `riscv.h` 后改为掩去最高位。正式 `make` 又在链接时报告 `undefined reference to exception_handler`，但 `trap.c` 和 `trapentry.S` 已完成编译；该符号属于尚未合并的异常模块，不能为消除报错而改写队友代码。为验证本模块，仅在 WSL `/tmp` 编译临时异常处理桩并独立链接测试镜像，仓库源码没有加入测试桩。
+AI 辅助实现中最关键的两个问题是原因编码和验证边界。最初若仅按 IRQ 宏值判断，会忽略 `scause` 的中断位；对照 `trap_dispatch()` 和 `riscv.h` 后改为掩去最高位。早期联合链接曾因缺少 `exception_handler` 失败；异常模块由胡家华实现合并后，该符号已补齐。
+
+---
+
+### 功能模块二：异常处理
+
+**负责人：** 2410935-胡家华
+
+本模块实现 `code/kern/trap/trap.c` 中的 `exception_handler(struct trapframe *tf)`。`trap_dispatch()` 在 `tf->cause` 最高位为 0 时走异常分支；本函数按 `CAUSE_ILLEGAL_INSTRUCTION`、`CAUSE_BREAKPOINT` 分类处理，其余异常调用 `print_trapframe(tf)` 兜底。处理返回后仍由模块一的 `RESTORE_ALL` / `sret` 恢复现场。
+
+**Spec 与 Prompt：** 评分脚本要求输出中出现 `Illegal instruction at` 与 `Breakpoint at`，且非法指令、断点后程序能继续跑完测试。Prompt 要求先核对 `riscv.h` 中的 cause 宏，再根据指令编码判断长度，禁止对所有异常一律 `epc += 4`。
+
+**指令长度判断：** RISC-V 中，若 `epc` 处半字的低 2 位不是 `0b11`，则为 16 位压缩指令，否则为 32 位指令。本实验评分用的 `ebreak` 与 `.word 0x0000007b` 均为 4 字节；`advance_sepc()` 仍按该规则通用跳过，避免以后遇到 `c.ebreak` 时死循环。
+
+```c
+static inline void advance_sepc(struct trapframe *tf) {
+    uint16_t insn = *(uint16_t *)tf->epc;
+    if ((insn & 0x3) != 0x3) {
+        tf->epc += 2;
+    } else {
+        tf->epc += 4;
+    }
+}
+
+void exception_handler(struct trapframe *tf) {
+    switch (tf->cause) {
+    case CAUSE_ILLEGAL_INSTRUCTION:
+        cprintf("Exception type: Illegal instruction\n");
+        cprintf("Illegal instruction at 0x%016lx\n", tf->epc);
+        advance_sepc(tf);
+        break;
+    case CAUSE_BREAKPOINT:
+        cprintf("Exception type: Breakpoint\n");
+        cprintf("Breakpoint at 0x%016lx\n", tf->epc);
+        advance_sepc(tf);
+        break;
+    default:
+        cprintf("Unhandled exception: cause %d\n", (int)tf->cause);
+        print_trapframe(tf);
+        break;
+    }
+}
+```
+
+**Lab2 依赖迁入：** 指导书要求把 Lab2 代码填到标有 `lab2` 的位置。`page_init()` 已在 `pmm.c` 中完整可用；`best_fit_pmm.c` 从 Lab2 工程复制了完整 Best-Fit 实现（当前 Makefile 仍排除该文件并使用 `default_pmm_manager`，不影响 Lab3 评分）。提交前请按课程要求保留 `lab3`/`lab2` 注释，并将其中的 `YOUR CODE` 替换为对应学号。
+
+**AI 协作中的问题：** 早期只声明不定义会导致链接失败；若固定 `epc += 4`，压缩断点会再次触发同一异常。对照 `test_lab3_context.S` 的 `ebreak` 与 `grade.sh` 期望字符串后，统一用半字低 2 位判断长度，并保证打印子串匹配评分脚本。
 
 ---
 
@@ -305,11 +350,31 @@ AI 辅助实现中最关键的两个问题是原因编码和验证边界。最�
 
 **结论：** 模块一已通过基础运行测试；尚未进行逐寄存器恢复值检查。临时测试处理函数只用于模块一验证，不计入组员二的正式实现。
 
-### 5.3 中断处理模块与整组联合验证
+### 5.3 中断处理、异常处理与整组联合验证
 
-在 WSL Ubuntu-22.04 的 `code/` 目录执行 `make`，`trap.c` 与 `trapentry.S` 均编译通过；正式链接停在 `undefined reference to exception_handler`。这说明当前中断模块没有 C 语法或宏定义错误，但由于异常处理尚未合并，不能称整组内核已完成构建。
+异常处理合并后，在 `code/` 下执行：
 
-为隔离该依赖，仅在 WSL `/tmp` 中编译临时异常处理桩，按项目入口对象顺序独立链接并以 QEMU 启动测试镜像。内核输出 `++ setup timer interrupts`，随后连续出现 10 次 `100 ticks`，进程正常退出，表明该测试条件下时钟事件能够重复设置，Trap 能够多次返回，且达到预设输出次数后调用了关机接口。临时桩不属于正式代码，测试也不覆盖异常处理路径或全部寄存器值的逐项校验。正式 `make qemu` 和 `make grade` 尚未在完整团队代码上通过，需待 `exception_handler()` 合并后再进行联合验证。
+```bash
+make clean && make
+make qemu
+make grade
+```
+
+**`make qemu` 结果：** OpenSBI 将控制权交给内核后打印 `(THU.CST) os is loading ...`；随后完成符号打印、`default_pmm_manager` 初始化、`check_alloc_page() succeeded!`，并输出 `satp` 虚实地址。时钟初始化后出现 `++ setup timer interrupts`，连续打印 10 次 `100 ticks` 后由 `sbi_shutdown()` 退出，说明时钟中断可重复触发且 Trap 能正确返回。
+
+![QEMU：OpenSBI 启动并进入内核](./images/qemu_boot_opensbi.png)
+
+![QEMU：内存检查通过与时钟中断 100 ticks](./images/qemu_timer_ticks.png)
+
+**`make grade` 结果：** 三项用例全部通过，总分 **100/100**（断点与寄存器恢复 35、非法指令与兜底 25、持续时钟中断 40）。
+
+![自动评分 Total Score: 100/100](./images/make_grade_100.png)
+
+模块一此前的启动与临时 Trap 返回截图仍保留作对照：
+
+![模块一测试环境启动截图](./images/kernel_boot.png)
+
+![模块一 Trap 返回测试截图](./images/module1_timer_test.png)
 
 ---
 
@@ -331,4 +396,4 @@ AI 辅助实现中最关键的两个问题是原因编码和验证边界。最�
 
 本次实验中，我主要利用 AI 辅助阅读 `SAVE_ALL` 和 `struct trapframe` 的对应关系，并逐步定位编译、链接、QEMU 启动等问题。比较有帮助的做法是每次先提供真实的文件内容和终端报错，再针对单个问题修改，而不是直接替换整个工程。特别是在模块二尚未完成时，使用临时测试桩隔离问题，可以先验证模块一的基本流程。不过 AI 给出的汇编和工程修改仍需要与真实代码核对，不能只根据“编译成功”判断正确，还必须观察运行输出。
 
-徐子恩在实现中断模块时先让 AI 对照真实源码寻找接口和常量，再核查 `scause` 的最高位语义及计数边界。对编译通过、链接失败和临时桩下 QEMU 运行成功分别记录，避免将局部验证写成完整实验通过。待异常处理模块合并后，小组仍需完成正式内核的联合测试。
+徐子恩在实现中断模块时先让 AI 对照真实源码寻找接口和常量，再核查 `scause` 的最高位语义及计数边界。胡家华补齐 `exception_handler` 与 Lab2 依赖后，整组代码可统一编译；报告中的联合评分结果应以本地重新执行的 `make grade` 为准，不可用临时桩结果代替正式验收。
