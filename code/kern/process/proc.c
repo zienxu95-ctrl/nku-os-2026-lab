@@ -218,7 +218,127 @@ init_main(void *arg)
     return 0;
 }
 
-//LAB4 function2 YOUR CODE
+static struct proc_struct *
+alloc_proc(void)
+{
+    struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
+    if (proc == NULL) {
+        return NULL;
+    }
+    // PCB 中的上下文、名称和链表节点也必须有确定的初值。
+    memset(proc, 0, sizeof(struct proc_struct));
+    proc->state = PROC_UNINIT;
+    proc->pid = -1;
+    proc->pgdir = boot_pgdir_pa;
+    list_init(&proc->list_link);
+    list_init(&proc->hash_link);
+    return proc;
+}
 
+void
+proc_init(void)
+{
+    int i;
+    list_init(&proc_list);
+    for (i = 0; i < HASH_LIST_SIZE; i++) {
+        list_init(&hash_list[i]);
+    }
 
-//LAB4 function3 YOUR CODE
+    idleproc = alloc_proc();
+    assert(idleproc != NULL);
+    // idleproc 沿用启动栈，不另行分配内核栈。
+    idleproc->pid = 0;
+    idleproc->state = PROC_RUNNABLE;
+    idleproc->kstack = (uintptr_t)bootstack;
+    idleproc->need_resched = 1;
+    set_proc_name(idleproc, "idle");
+    nr_process = 1;
+    current = idleproc;
+
+    int pid = kernel_thread(init_main, "Hello world!!", 0);
+    assert(pid > 0);
+    initproc = find_proc(pid);
+    assert(initproc != NULL && initproc->pid == pid);
+    set_proc_name(initproc, "init");
+    assert(nr_process == 2);
+}
+
+int
+kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
+{
+    struct trapframe tf;
+    memset(&tf, 0, sizeof(tf));
+    // entry.S 从 s0 取函数、从 s1 取参数，sret 后进入该入口。
+    tf.gpr.s0 = (uintptr_t)fn;
+    tf.gpr.s1 = (uintptr_t)arg;
+    tf.epc = (uintptr_t)kernel_thread_entry;
+    tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;
+    return do_fork(clone_flags | CLONE_VM, 0, &tf);
+}
+
+static void
+copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
+{
+    // 栈顶保留 trapframe；其大小为 16 字节的整数倍，满足 RISC-V 栈对齐。
+    proc->tf = (struct trapframe *)(proc->kstack + KSTACKSIZE - sizeof(struct trapframe));
+    *proc->tf = *tf;
+    proc->tf->gpr.a0 = 0;
+    proc->tf->gpr.sp = (esp != 0) ? esp : proc->kstack + KSTACKSIZE;
+    proc->context.ra = (uintptr_t)forkret;
+    proc->context.sp = (uintptr_t)proc->tf;
+}
+
+static int
+copy_mm(uint32_t clone_flags, struct proc_struct *proc)
+{
+    // Lab4 仅创建内核线程，所有线程共用启动页表。
+    (void)clone_flags;
+    if (current->mm != NULL) {
+        return -E_INVAL;
+    }
+    proc->mm = NULL;
+    proc->pgdir = boot_pgdir_pa;
+    return 0;
+}
+
+int
+do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
+{
+    if (nr_process >= MAX_PROCESS) {
+        return -E_NO_FREE_PROC;
+    }
+    if (tf == NULL) {
+        return -E_INVAL;
+    }
+
+    struct proc_struct *proc = alloc_proc();
+    if (proc == NULL) {
+        return -E_NO_MEM;
+    }
+    proc->parent = current;
+    int ret = setup_kstack(proc);
+    if (ret != 0) {
+        goto bad_proc;
+    }
+    if ((ret = copy_mm(clone_flags, proc)) != 0) {
+        goto bad_kstack;
+    }
+    copy_thread(proc, stack, tf);
+
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    // 完成全部初始化后，才公布 PID 和可运行状态。
+    proc->pid = get_pid();
+    hash_proc(proc);
+    list_add(&proc_list, &proc->list_link);
+    nr_process++;
+    wakeup_proc(proc);
+    local_intr_restore(intr_flag);
+    return proc->pid;
+
+bad_kstack:
+    put_kstack(proc);
+bad_proc:
+    kfree(proc);
+    return ret;
+}
