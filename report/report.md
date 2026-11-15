@@ -1,334 +1,249 @@
-# 操作系统实验报告
+# 操作系统实验 Lab4 实验报告
 
-## 实验基本信息
+> **实验主题**：物理页映射管理、进程创建与调度（RISC-V uCore）  
+> **小组成员**：程浩轩 /徐子恩/胡家华
+> **实验分工**：程浩轩负责**功能模块一：虚拟内存页映射操作**；  
+> **项目/分支**：Lab4；
 
-| 项目 | 内容 |
-|------|------|
-| **实验名称** | Lab 3：中断与异常处理 |
-| **小组成员** | 2411102-程浩轩、2411112-徐子恩、[胡家华] |
+## 1. 实验目的
 
+本实验是在之前物理内存管理与中断异常处理实验基础上，继续学习 uCore 内核的虚拟内存页表及进程管理机制。整个 Lab4 涉及虚拟地址和物理页之间的映射、进程创建，以及调度运行。本人负责第一部分，目标是实现 `kern/mm/pmm.c` 内的 `page_insert()` 和 `page_remove()`：使内核能够建立、替换、删除虚拟地址对应的物理页映射，并正确更新页表项、物理页引用计数及 TLB。随后利用框架的 `check_pgdir()` 和 `check_boot_pgdir()` 验证实现。
 
-### 小组分工
+## 2. 实验环境与工具
 
-**练习如何分工？**
+| 项目 | 实际使用情况 |
+|---|---|
+| 主机环境 | Windows + WSL Ubuntu，终端用户为 `student` |
+| 实验工程 | `~/OS2026-lab4/lab4_new` |
+| 目标架构 | RISC-V 64 位，Sv39 三级页表 |
+| 编译工具链 | `riscv64-unknown-elf-*` 交叉工具链，`make` |
+| 运行环境 | QEMU `virt` 虚拟机，OpenSBI |
+| 代码文件 | `kern/mm/pmm.c`、`kern/mm/default_pmm.c`、`kern/mm/memlayout.h` |
+| 辅助工具 | Python 3（提取与恢复前置实验代码）、终端、ChatGPT（分析接口、错误与测试流程） |
 
-| 成员 | 负责的练习/模块 |
-|------|----------------|
-| 2411102-程浩轩 | 功能模块一：Trap 上下文恢复与 Trap 入口功能（`RESTORE_ALL`、`__alltraps`） |
-| 2411112-徐子恩 | 功能模块二：中断处理（`interrupt_handler`） |
-| [胡家华] | 功能模块二：异常处理功能
+## 3. 整体实验内容与小组分工
 
+| 模块 | 主要任务 | 实现状态 |
+|---|---|---|
+| 功能模块一 程浩轩 | `page_insert`、`page_remove`；页表映射、引用计数、TLB 一致性 | **实现完成，已独立测试通过** |
+| 功能模块二（其他成员） | 进程控制块初始化、内核线程创建及 `do_fork` 等 | 待小组合并，不在本报告中声明完成 |
+| 功能模块三（其他成员） | 空闲进程、进程切换与调度相关函数 | 待小组合并，不在本报告中声明完成 |
 
+## 4. 模块一相关基础原理
 
-## 一、实验目的
+### 4.1 页表映射的含义
 
-本实验的主要目的是：
+用户或内核访问一个虚拟地址时，处理器需要通过页表找到对应物理页。Sv39 采用三级页表，虚拟地址中的索引字段用于逐级定位页表项（PTE）。框架的 `get_pte(pgdir, la, create)` 已经负责找到 `la` 对应的叶子页表项；当 `create` 为真且中间页表不存在时，它会申请物理页存放新页表。本人实现的两个函数在叶子页表项上操作，而不是重复实现三级页表遍历。
 
-1. 理解 RISC-V 中断和异常的基本机制，以及 `stvec`、`sstatus`、`sepc`、`scause` 等寄存器在 Trap 处理过程中的作用。
-2. 掌握 Trap 进入内核时处理器上下文的保存和恢复，理解 Trap frame 在汇编入口与 C 语言处理函数之间的传递方式。
-3. 完成 Trap 入口、C 语言处理、上下文恢复与 `sret` 返回的基本流程，并通过 QEMU 验证。
-4. 在实验过程中使用 AI 辅助理解代码、定位编译和启动问题，同时核对生成代码与实验框架是否一致。
+### 4.2 页表项与权限
 
----
+`pte_create(page2ppn(page), perm)` 使用物理页号和权限构造页表项，并设置有效位 `PTE_V`。本实验的权限标志涉及 `PTE_U`、`PTE_W`、`PTE_R` 等。建立或替换映射后，页表中必须记录新的物理页与相应权限；同一物理页重新插入时，也应允许更新权限。
 
-## 二、实验环境
+### 4.3 物理页引用计数
 
-- 系统：Windows 11 + WSL2 Ubuntu（实验命令在 Ubuntu 中执行）。
-- 目标架构：RISC-V 64 位；使用 `riscv64-unknown-elf` 工具链。
-- 模拟环境：QEMU `qemu-system-riscv64`，OpenSBI（运行截图显示 v0.9）。
-- 项目目录：Windows `E:\os实验\lab3`，对应 WSL `/mnt/e/os实验/lab3`；源码与 Makefile 位于 `code/`。
-- 代码在 Windows 环境检查和编辑；编译与 QEMU 运行通过 WSL Ubuntu-22.04 完成。
+一个物理页可以同时被多个虚拟页引用，因此不能一删除映射就释放物理页。`page_ref_inc(page)` 在增加映射引用时加一；`page_ref_dec(page)` 在撤销映射引用时减一；只有引用计数降到零，才通过 `free_page(page)` 归还物理页。若新的映射目标就是原物理页，则只需要更新 PTE，引用计数保持原值。
 
-**使用的 AI 工具**
+### 4.4 TLB 同步
 
-| 成员 | AI 编程工具 | 底层模型 | 备注 |
-|------|------------|---------|------|
-| 2411102-程浩轩 | ChatGPT（聊天界面） | GPT-6 | 辅助分析 Trap 汇编、排查编译及 QEMU 启动问题 |
-| 2411112-徐子恩 | Codex | GPT-6 | 核对中断接口、实现 `interrupt_handler()` 并分析编译与 QEMU 结果 |
-| [其他成员信息，如有] | [待填写] | [待填写] | [按需要删除] |
+CPU 可能保存旧的虚拟地址转换结果。修改有效 PTE 后需要使对应地址的旧 TLB 项失效。框架提供 `tlb_invalidate(pgdir, la)`，底层使用 `sfence.vma` 完成指定地址的转换缓存同步。
 
----
+## 5. 功能模块一设计与实现
 
-## 三、实验整体逻辑分析
+### 5.1 需要修改的位置
 
-### 2.1 本章节的逻辑主线
+实验框架在 `kern/mm/pmm.c` 中保留了 `//LAB4 function1 YOUR CODE` 标记。根据任务要求，本人仅在此标记下新增页映射操作函数，未覆盖 `get_pte()`、`get_page()` 或老师提供的 `check_pgdir()`、`check_boot_pgdir()`。
 
-本章的核心是建立操作系统对中断、异常的统一处理流程。发生 Trap 后，处理器根据 `stvec` 转入汇编入口，内核先保存现场，随后把保存的数据以 `struct trapframe *` 传给 C 语言函数 `trap()`。C 语言部分判断是中断还是异常并执行相应处理；处理结束后恢复现场，使用 `sret` 返回原来的执行流程。
-
-两部分模块存在先后依赖关系：模块一提供可靠的“进入和返回”通道，模块二才可以在其中实现时钟中断、非法指令异常和断点异常等具体逻辑。
-
-### 2.2 功能的逐步实现
-
-1. **初始化 Trap 入口**：`idt_init()` 将 `stvec` 设为 `__alltraps` 的地址。
-2. **保存上下文**：发生 Trap 后进入 `__alltraps`，执行框架提供的 `SAVE_ALL`，形成 Trap frame。
-3. **调用 C 函数**：把当前 `sp` 作为第一个参数传入 `a0`，执行 `jal trap`。
-4. **分发和处理**：`trap()` 由 `trap_dispatch()` 将中断交给 `interrupt_handler()`，将异常交给 `exception_handler()`（具体由模块二完成）。
-5. **恢复与返回**：跳转 `__trapret`，执行 `RESTORE_ALL` 及 `sret`，恢复原程序执行。
-
----
-
-## 四、实验内容与实现
-
-### 功能模块一：Trap 上下文恢复与 Trap 入口功能
-
-**负责人：** 2411102-程浩轩
-
-#### 模块功能描述
-
-**需要实现/修改的函数或汇编入口：**
-
-```asm
-.macro RESTORE_ALL
-    #lab3 function1 YOUR CODE
-    # 恢复 Trap 前的寄存器和返回状态
-.endm
-
-.globl __alltraps
-__alltraps:
-    SAVE_ALL
-    #lab3 function1 YOUR CODE
-    # 调用 trap(struct trapframe *tf)，再进入 __trapret
-```
-
-实现文件：`code/kern/trap/trapentry.S`。接口函数是 `void trap(struct trapframe *tf);`，声明位于 `code/kern/trap/trap.h`，定义在 `code/kern/trap/trap.c`。
-
-本模块没有修改框架原有 `SAVE_ALL` 和 `struct trapframe` 的布局。`SAVE_ALL` 在栈上预留 `36 * REGBYTES` 个字节，其中前 32 个位置对应 `pushregs` 的通用寄存器槽位，后四个依次保存 `sstatus`、`sepc`、`sbadaddr`、`scause`。其中原 `sp` 经 `sscratch` 暂存后写入第 2 号槽位。
-
-**`RESTORE_ALL` 的主要实现：**
-
-```asm
-.macro RESTORE_ALL
-    #lab3 function1 YOUR CODE
-    LOAD t0, 32*REGBYTES(sp)
-    csrw sstatus, t0
-    LOAD t0, 33*REGBYTES(sp)
-    csrw sepc, t0
-
-    LOAD x1, 1*REGBYTES(sp)
-    LOAD x3, 3*REGBYTES(sp)
-    LOAD x4, 4*REGBYTES(sp)
-    LOAD x6, 6*REGBYTES(sp)
-    LOAD x7, 7*REGBYTES(sp)
-    LOAD x8, 8*REGBYTES(sp)
-    LOAD x9, 9*REGBYTES(sp)
-    LOAD x10, 10*REGBYTES(sp)
-    LOAD x11, 11*REGBYTES(sp)
-    LOAD x12, 12*REGBYTES(sp)
-    LOAD x13, 13*REGBYTES(sp)
-    LOAD x14, 14*REGBYTES(sp)
-    LOAD x15, 15*REGBYTES(sp)
-    LOAD x16, 16*REGBYTES(sp)
-    LOAD x17, 17*REGBYTES(sp)
-    LOAD x18, 18*REGBYTES(sp)
-    LOAD x19, 19*REGBYTES(sp)
-    LOAD x20, 20*REGBYTES(sp)
-    LOAD x21, 21*REGBYTES(sp)
-    LOAD x22, 22*REGBYTES(sp)
-    LOAD x23, 23*REGBYTES(sp)
-    LOAD x24, 24*REGBYTES(sp)
-    LOAD x25, 25*REGBYTES(sp)
-    LOAD x26, 26*REGBYTES(sp)
-    LOAD x27, 27*REGBYTES(sp)
-    LOAD x28, 28*REGBYTES(sp)
-    LOAD x29, 29*REGBYTES(sp)
-    LOAD x30, 30*REGBYTES(sp)
-    LOAD x31, 31*REGBYTES(sp)
-    LOAD x5, 5*REGBYTES(sp)
-    LOAD x2, 2*REGBYTES(sp)
-.endm
-```
-
-这段代码先从 Trap frame 恢复 `sstatus` 和 `sepc`，然后恢复通用寄存器。`x5`（即 `t0`）被临时用于写 CSR，因此在最后才从栈中恢复；`x2` 就是栈指针 `sp`，必须最后恢复，否则后续寄存器加载就可能使用错误的栈基址。`x0` 恒为零，无需恢复；`scause` 与 `sbadaddr` 是陷入时的诊断信息，不属于这次 `sret` 必须恢复的状态。
-
-**`__alltraps` 的主要实现：**
-
-```asm
-.globl __alltraps
-.align(2)
-__alltraps:
-    SAVE_ALL
-    #lab3 function1 YOUR CODE
-    mv a0, sp
-    jal trap
-    j __trapret
-
-.globl __trapret
-__trapret:
-    RESTORE_ALL
-    sret
-```
-
-其中 `mv a0, sp` 利用 RISC-V 调用约定将 Trap frame 首地址作为第一个参数交给 `trap()`；`jal trap` 进入 C 函数；返回后跳转 `__trapret`，由恢复宏和 `sret` 完成返回。`SAVE_ALL` 产生的 288 字节栈帧在 RV64 上满足调用前的栈对齐要求（前提是 Trap 入口原 `sp` 已按内核约定对齐）。
-
-模块一的 Spec 以现有 `SAVE_ALL` 和 `struct trapframe` 为约束：恢复偏移必须逐项对应，`x0` 不需恢复，暂用的 `t0` 和原 `sp` 应最后恢复；`sstatus`、`sepc` 写回后由 `sret` 完成返回，不改变模块二接口。面向 AI 的 Prompt 先提供 `trapentry.S`、`trap.h`、`trap.c` 及 `riscv.h` 的真实定义，再要求核对寄存器槽位、调用约定和栈对齐，并把汇编检查、链接与 QEMU 运行分别验证。这一设计避免只凭函数名或未经核对的偏移生成恢复代码。
-
-本模块经历了代码实现、工程依赖修复和运行验证三个阶段。下面只记录实际对话中发生过的操作和现象。
-
-**实施过程：** 查看 `trapentry.S`、`trap.h`、`trap.c`，发现框架已提供 `SAVE_ALL`，但 `RESTORE_ALL` 和 `__alltraps` 仍留有 `#lab3 function1 YOUR CODE`。依据寄存器保存位置实现恢复代码，并在 `__alltraps` 中加入 `mv a0, sp`、`jal trap` 和 `j __trapret`。
-
-**初步结果：** `make -k` 输出中出现 `+ cc kern/trap/trapentry.S`，该汇编文件未报错，说明通过汇编检查；但整个项目尚未成功链接，不能据此认定运行正确。
-
-**遇到的问题及处理：**
-
-1. `trap.c` 调用 `interrupt_handler`、`exception_handler` 时出现隐式声明错误。为独立测试模块一，临时加入函数声明和测试桩；组员二后续应替换为正式实现。
-2. `best_fit_pmm.c` 缺少 `free_list`、`nr_free`。检查发现 `pmm.c` 选择的是 `default_pmm_manager`，因此仅在 Makefile 源文件列表中暂时过滤不使用的 Best Fit 文件。
-3. `pmm.c` 调用 `page_init()` 但原 Lab3 框架未提供对应实现。从已完成的 Lab2 工程提取该函数，并针对缺少的 `PHYSICAL_MEMORY_END`、`KERNEL_BEGIN_PADDR` 补充与已有 Lab2 工程一致的内存布局宏。
-4. 首次运行 QEMU 只显示 OpenSBI，没有显示内核日志。检查 Makefile 后，将 `qemu` 目标中的 `-device loader,file=$(UCOREIMG),addr=0x80200000` 改为 `-kernel $(UCOREIMG)`，此后进入内核并看到 `check_alloc_page() succeeded!`、`++ setup timer interrupts`。
-
-以上是为了恢复 Lab3 可测试环境而进行的依赖调整，**不是模块一的主要功能实现**；最终合并时应由小组共同审核其保留方式。
-
-**测试方法：** 在临时 `trap_test_stub.c` 中收到时钟中断后调用 `clock_set_next_event()` 安排下一次中断，同时累加 `ticks` 并打印前三次中断。测试版 `kern_init()` 在正常执行循环中检查中断处理时设定的 `trap_test_seen` 标记，打印返回成功信息。这个标记是在 Trap 外部的正常执行流中观察到的，比单纯在中断处理函数内部打印更能说明 Trap 返回成功。
-
-**实际运行输出：**
-
-```text
-++ setup timer interrupts
-Module1 TEST: timer interrupt 1
-Module1 TEST: returned from trap successfully!
-Module1 TEST: timer interrupt 2
-Module1 TEST: timer interrupt 3
-```
-
-**结果分析：** 编译、链接、QEMU 启动均成功；临时测试中能重复进入时钟中断处理函数，且在正常执行流中打印返回成功信息，支持模块一的 Trap 入口、保存、C 函数调用、恢复和 `sret` 返回路径通过基本运行测试。此测试并未逐项检查所有通用寄存器的数值一致性，也不等于模块二全部功能通过。
-
-**关键改进点总结：**
-
-1. 先用 `SAVE_ALL` 和 `struct trapframe` 交叉核对保存槽位，再写 `RESTORE_ALL`，避免自行猜测偏移。
-2. 把内核依赖错误和模块一本身错误区分开，逐步修复链接、内存管理和启动参数。
-3. 使用临时函数完成独立验证，测试完成后将其移出正式编译目录，避免与组员二实现冲突。
-
----
-
-### 功能模块二：中断处理
-
-**负责人：** 2411112-徐子恩
-
-本模块只实现 `code/kern/trap/trap.c` 中的 `interrupt_handler(struct trapframe *tf)`。胡家华负责的 `exception_handler()` 属于异常处理模块，当前尚未合并，因此本节不描述其实现或声称异常路径已通过测试。Trap 入口保存现场后调用 `trap()`；`trap_dispatch()` 将 `tf->cause` 转为有符号整数，利用最高位区分中断与同步异常，再把中断交给本函数。处理结束后沿队友一的 `__trapret` 路径恢复现场。
-
-本练习的 Spec 是持续响应 Supervisor Timer Interrupt：每次重设下一事件，`ticks` 恰好加一，每 100 次输出一次框架规定的 `100 ticks`，累计输出 10 次后通过 SBI 关机；其他已定义 IRQ 应有明确日志，未知 IRQ 应打印完整 Trap frame。Prompt 设计先要求 AI 搜索 `clock_set_next_event()`、`ticks`、`TICK_NUM`、IRQ 宏、`sbi_shutdown()` 及 `trap_dispatch()` 的实际定义，再限制修改范围和验证结论。检查发现仓库没有 `SHUTDOWN_AFTER`，于是只在 `trap.c` 补充 `#define SHUTDOWN_AFTER 10`，并包含已有的 `sbi.h`；没有新建重复的 tick 全局变量。
-
-核心函数按实际执行路径分为以下三段展示。三段代码按顺序连接，即为当前源码中的完整 `interrupt_handler()`，这里仅为便于说明而分开展示。
-
-**原因解析与时钟中断。** `tf->cause` 是 64 位 `uintptr_t`；`scause` 的最高位表示中断，低位才是原因编号。因此先清除第 63 位，再与 `IRQ_S_TIMER` 比较。每次收到时钟中断，先设置下一次事件，再将全局 `ticks` 加一；`print_ticks()` 只在 100 的整数倍调用。`printed_count` 仅在输出后增加，因此第 10 次输出恰好发生于第 1000 次 tick，随后调用 SBI 关机接口。
+主要接口：
 
 ```c
-void interrupt_handler(struct trapframe *tf) {
-    uintptr_t irq = tf->cause & (((uintptr_t)1 << 63) - 1);
-    static size_t printed_count = 0;
+int page_insert(pde_t *pgdir, struct Page *page,
+                uintptr_t la, uint32_t perm);
+void page_remove(pde_t *pgdir, uintptr_t la);
+```
 
-    switch (irq) {
-    case IRQ_S_TIMER:
-        clock_set_next_event();
-        ticks++;
-        if (ticks % TICK_NUM == 0) {
-            print_ticks();
-            printed_count++;
-            if (printed_count >= SHUTDOWN_AFTER) {
-                sbi_shutdown();
-            }
+### 5.2 `page_insert()` 实现思路
+
+1. `get_pte(pgdir, la, 1)` 获取叶子页表项；若申请中间页表失败，返回 `-E_NO_MEM`。
+2. 为新物理页增加引用计数。
+3. 如果原 PTE 已有效，使用 `pte2page(*ptep)` 找到旧物理页：
+   - 原物理页与目标物理页相同，抵消刚增加的引用计数，避免重复计数；
+   - 如果是不同物理页，先撤销旧映射并减少旧页引用计数，归零时释放旧页。
+4. 使用 `pte_create(page2ppn(page), perm)` 写入新的有效叶子 PTE。
+5. 执行 `tlb_invalidate(pgdir, la)`，返回零。
+
+```c
+pte_t *ptep = get_pte(pgdir, la, 1);
+if (ptep == NULL) {
+    return -E_NO_MEM;
+}
+page_ref_inc(page);
+if (*ptep & PTE_V) {
+    struct Page *old_page = pte2page(*ptep);
+    if (old_page == page) {
+        page_ref_dec(page);
+    } else {
+        *ptep = 0;
+        if (page_ref_dec(old_page) == 0) {
+            free_page(old_page);
         }
-        break;
-```
-
-**其他已定义的中断。** 其余 IRQ 按 `riscv.h` 中已有的类型分别输出日志。这里不引入新的 IRQ 宏，也不改变时钟计数。
-
-```c
-    case IRQ_U_SOFT:
-        cprintf("User software interrupt\n");
-        break;
-    case IRQ_S_SOFT:
-        cprintf("Supervisor software interrupt\n");
-        break;
-    case IRQ_H_SOFT:
-        cprintf("Hypervisor software interrupt\n");
-        break;
-    case IRQ_M_SOFT:
-        cprintf("Machine software interrupt\n");
-        break;
-    case IRQ_U_TIMER:
-        cprintf("User timer interrupt\n");
-        break;
-    case IRQ_H_TIMER:
-        cprintf("Hypervisor timer interrupt\n");
-        break;
-    case IRQ_M_TIMER:
-        cprintf("Machine timer interrupt\n");
-        break;
-    case IRQ_U_EXT:
-        cprintf("User external interrupt\n");
-        break;
-    case IRQ_S_EXT:
-        cprintf("Supervisor external interrupt\n");
-        break;
-    case IRQ_H_EXT:
-        cprintf("Hypervisor external interrupt\n");
-        break;
-    case IRQ_M_EXT:
-        cprintf("Machine external interrupt\n");
-        break;
-    case IRQ_COP:
-        cprintf("Coprocessor interrupt\n");
-        break;
-    case IRQ_HOST:
-        cprintf("Host interrupt\n");
-        break;
-```
-
-**未知中断。** 对未匹配的原因先输出编号，再用 `print_trapframe(tf)` 输出现场，避免静默忽略。末尾关闭 `switch` 和函数。
-
-```c
-    default:
-        cprintf("Unknown interrupt: cause %d\n", (int)irq);
-        print_trapframe(tf);
-        break;
     }
 }
+*ptep = pte_create(page2ppn(page), perm);
+tlb_invalidate(pgdir, la);
+return 0;
 ```
 
-AI 辅助实现中最关键的两个问题是原因编码和验证边界。最初若仅按 IRQ 宏值判断，会忽略 `scause` 的中断位；对照 `trap_dispatch()` 和 `riscv.h` 后改为掩去最高位。正式 `make` 又在链接时报告 `undefined reference to exception_handler`，但 `trap.c` 和 `trapentry.S` 已完成编译；该符号属于尚未合并的异常模块，不能为消除报错而改写队友代码。为验证本模块，仅在 WSL `/tmp` 编译临时异常处理桩并独立链接测试镜像，仓库源码没有加入测试桩。
+### 5.3 `page_remove()` 实现思路
 
----
+1. 以 `create=0` 调用 `get_pte()`，不为删除操作分配新页表。
+2. 若页表项不存在或没有 `PTE_V`，直接返回。
+3. 找到原物理页，清除 PTE；引用计数减一，降至零时释放物理页。
+4. 调用 `tlb_invalidate()`，让后续访问不能继续使用旧映射。
 
-## 五、测试与验证
+```c
+pte_t *ptep = get_pte(pgdir, la, 0);
+if (ptep == NULL || !(*ptep & PTE_V)) {
+    return;
+}
+struct Page *page = pte2page(*ptep);
+*ptep = 0;
+if (page_ref_dec(page) == 0) {
+    free_page(page);
+}
+tlb_invalidate(pgdir, la);
+```
 
-### 5.1 模块一：内核启动与内存初始化
+### 5.4 关键接口之间的关系
 
-执行 `make clean`、`make` 和 `make qemu` 后，QEMU 输出内核初始化日志，可观察到 `memory management: default_pmm_manager`、`check_alloc_page() succeeded!` 及 `++ setup timer interrupts`。这证明测试环境可启动内核并执行到时钟初始化位置。
+| 接口 | 在模块一中的作用 |
+|---|---|
+| `get_pte()` | 查找叶子 PTE，必要时创建中间页表 |
+| `pte2page()` | 由有效 PTE 找到对应的 `Page` 描述符 |
+| `page2ppn()` / `pte_create()` | 将目标物理页写为有效 PTE |
+| `page_ref_inc()` / `page_ref_dec()` | 跟踪物理页映射引用 |
+| `free_page()` | 归还已无映射引用的物理页 |
+| `tlb_invalidate()` | 同步页表变更与处理器地址转换缓存 |
 
-![模块一测试环境启动截图](./images/kernel_boot.png)
+## 6. 前置代码补全、问题分析与修复
 
-### 5.2 模块一：时钟 Trap 进入与返回
+### 6.1 编译时缺少 `best_fit_pmm.h`
 
-使用临时测试函数，实际观察到第一次时钟中断、返回原执行流后的确认输出，以及第二、第三次时钟中断。截图如下：
+初次执行 `make clean && make` 时，编译 `kern/mm/default_pmm.c` 报出 `best_fit_pmm.h: No such file or directory`。检查发现 Lab4 原始工程缺少该头文件，而已完成的 Lab2 工程 `~/nku-os-2026-lab/kern/mm/` 中存在。将该头文件复制到 Lab4 的 `kern/mm/`，解决了第一处头文件缺失。
 
-![模块一 Trap 返回测试截图](./images/module1_timer_test.png)
+### 6.2 Default PMM 的状态及方法缺失
 
-**结论：** 模块一已通过基础运行测试；尚未进行逐寄存器恢复值检查。临时测试处理函数只用于模块一验证，不计入组员二的正式实现。
+继续编译出现 `free_list`、`nr_free` 未定义。对比 Lab2 和 Lab4 后发现，Lab4 的 `default_pmm.c` 保留了老师的 `basic_check()`、`best_fit_check()`，但缺少实际的 First-Fit 内存分配器实现。于是从 Lab2 恢复 `free_area`、相关宏以及 `default_init()`、`default_init_memmap()`、`default_alloc_pages()`、`default_free_pages()`、`default_nr_free_pages()`，补充 `default_pmm_manager` 注册，并将 Default PMM 的 `.check` 指向 `basic_check()`。保留 Lab4 原有的两段测试内容不变。
 
-### 5.3 中断处理模块与整组联合验证
+### 6.3 `page_init()` 缺失
 
-在 WSL Ubuntu-22.04 的 `code/` 目录执行 `make`，`trap.c` 与 `trapentry.S` 均编译通过；正式链接停在 `undefined reference to exception_handler`。这说明当前中断模块没有 C 语法或宏定义错误，但由于异常处理尚未合并，不能称整组内核已完成构建。
+执行 `make -k` 时，`pmm.c` 出现 `page_init()` 隐式声明警告。恢复 Lab2 中已验证的 `page_init()` 实现，并为当前 `memlayout.h` 补充实验使用的 `PHYSICAL_MEMORY_END = 0x88000000`、`KERNEL_BEGIN_PADDR = 0x80200000`，保留 Lab4 原有的 `PHYSICAL_MEMORY_OFFSET`、三级页表与模块一代码。
 
-为隔离该依赖，仅在 WSL `/tmp` 中编译临时异常处理桩，按项目入口对象顺序独立链接并以 QEMU 启动测试镜像。内核输出 `++ setup timer interrupts`，随后连续出现 10 次 `100 ticks`，进程正常退出，表明该测试条件下时钟事件能够重复设置，Trap 能够多次返回，且达到预设输出次数后调用了关机接口。临时桩不属于正式代码，测试也不覆盖异常处理路径或全部寄存器值的逐项校验。正式 `make qemu` 和 `make grade` 尚未在完整团队代码上通过，需待 `exception_handler()` 合并后再进行联合验证。
+### 6.4 链接缺少进程与调度接口
 
----
+完成前置代码补全后，全部 C 文件能够编译，但链接时报：
 
-## 六、实验总结与收获
+```text
+undefined reference to `proc_init'
+undefined reference to `cpu_idle'
+```
 
-### 对操作系统的理解
+这两个函数分别属于尚未合并的进程初始化和调度模块，不是模块一的页映射代码错误。为验证模块一，临时备份并修改 `kern/init/init.c`，让启动流程在 `pmm_init()` 返回后打印模块一测试标志并进入空循环，暂不进入 `proc_init()`、`cpu_idle()` 等未完成部分。同时备份并暂时将 Makefile 的 QEMU 启动方式从 `-device loader,file=$(UCOREIMG),addr=0x80200000` 改为 `-kernel $(UCOREIMG)`。
 
-**模块一已完成部分：**
+### 6.5 其他编译提示
 
-1. **Trap 与处理器上下文。** Trap 并非简单调用普通函数：硬件改变异常返回相关状态，内核还必须保存软件可见寄存器，才能在处理后恢复原执行流。
-2. **Trap frame 与栈帧。** 本实验的 Trap frame 是特定布局的保存区，汇编中的偏移要与 C 语言 `struct trapframe` 字段顺序一致；普通 C 函数调用也使用栈，但两者的用途和保存约定不同。
-3. **控制状态寄存器与返回。** `sepc` 指示返回执行位置，`sstatus` 保存返回所需的特权相关状态，`sret` 完成特权态陷入返回。`scause`、`sbadaddr` 则主要用于判断和诊断异常原因。
-4. **中断与异常的分工。** 模块一负责通用进入/返回，模块二决定怎样处理具体原因。这样可以避免每种异常重复编写保存和恢复流程。
-5. **理论中重要、但本实验暂未完整涉及的内容。** 例如用户态与内核态完整切换、多核中断路由、复杂设备中断优先级和抢占式调度，都需要更完整的内核机制支持。
+`trap.c` 中 `interrupt_handler()`、`exception_handler()` 有隐式声明警告，`kmalloc.c` 中 `kva2page()` 存在指针参数类型警告。本次独立测试未因这些警告中断，但完整 Lab4 集成时仍应检查和修正，而不能视作已经解决。
 
-**中断处理的进一步理解：** 中断通常由外部事件异步触发，时钟处理完毕后应返回被打断的指令流；同步异常由当前指令触发，是否调整 `epc` 取决于异常类型和处理策略，属于后续异常模块。Trap frame 保存的是进入处理程序时的现场，`ticks` 则是内核维护的时钟事件计数，二者用途不同。定时器重新编程与中断使能共同决定时钟是否能持续触发；本实验使用单核、单一时钟事件，没有实现进程调度、多核中断分发、设备中断优先级或用户态上下文切换，这些机制还需要在现有 Trap 通路之上扩展。
+## 7. 编译与测试过程
 
-### AI 协作开发的经验
+### 7.1 编译验证
 
-本次实验中，我主要利用 AI 辅助阅读 `SAVE_ALL` 和 `struct trapframe` 的对应关系，并逐步定位编译、链接、QEMU 启动等问题。比较有帮助的做法是每次先提供真实的文件内容和终端报错，再针对单个问题修改，而不是直接替换整个工程。特别是在模块二尚未完成时，使用临时测试桩隔离问题，可以先验证模块一的基本流程。不过 AI 给出的汇编和工程修改仍需要与真实代码核对，不能只根据“编译成功”判断正确，还必须观察运行输出。
+在项目根目录执行：
 
-徐子恩在实现中断模块时先让 AI 对照真实源码寻找接口和常量，再核查 `scause` 的最高位语义及计数边界。对编译通过、链接失败和临时桩下 QEMU 运行成功分别记录，避免将局部验证写成完整实验通过。待异常处理模块合并后，小组仍需完成正式内核的联合测试。
+```bash
+cd ~/OS2026-lab4/lab4_new
+make clean
+make -k
+```
+
+恢复 Lab2 基础功能后，日志出现 `+ cc kern/mm/default_pmm.c`、`+ cc kern/mm/pmm.c`、`+ cc kern/mm/vmm.c`，证明相关 C 文件编译完成。首次完整链接因 `proc_init`、`cpu_idle` 缺失而失败；之后使用临时模块一独立测试启动入口，重新编译并启动 QEMU。
+
+### 7.2 QEMU 独立运行
+
+临时测试版本使用：
+
+```bash
+make clean
+make
+make qemu
+```
+
+QEMU 输出显示设备树解析了 128 MB 物理内存，初始化后空闲页数为 **31,736**，关键输出如下：
+
+```text
+Physical Memory from DTB:
+    Base: 0x0000000080000000
+    Size: 0x0000000008000000 (128 MB)
+...
+free pages: 31736
+check_alloc_page() succeeded!
+check_pgdir() succeeded!
+check_boot_pgdir() succeeded!
+use SLOB allocator
+kmalloc_init() succeeded!
+
+==============================
+Lab4 Module1 Test: PASS
+page_insert/page_remove tests finished
+==============================
+```
+
+> 此处 `Lab4 Module1 Test: PASS` 为**临时测试入口在 `pmm_init()` 正常返回后打印的标识**，并不是额外一套自动评分程序；主要功能证据是框架自带的 `check_pgdir()` 与 `check_boot_pgdir()` 通过。
+
+![Lab4 模块一 QEMU 独立测试结果](images/lab4_module1_pass.png)
+
+*图 1：2026-11-10 的 QEMU 运行截图。截图显示 `check_alloc_page()`、`check_pgdir()`、`check_boot_pgdir()` 和模块一测试结束标识。*
+
+### 7.3 测试覆盖情况
+
+| 测试点 | 实际依据 | 结果 |
+|---|---|---|
+| 基础物理页分配器 | `check_alloc_page()` | 通过 |
+| 插入虚拟页映射及引用计数 | `check_pgdir()` 的断言 | 通过 |
+| 替换映射、访问权限与删除操作 | `check_pgdir()` 的断言 | 通过 |
+| 同一物理页映射到两个虚拟地址、地址访问一致性 | `check_boot_pgdir()` | 通过 |
+| 内核小对象分配器初始化 | `kmalloc_init()` | 通过 |
+
+## 8. AI 辅助记录与提示词整理
+
+本实验使用 AI 主要辅助理解接口、定位编译依赖、设计独立验证流程。实际代码仍应以本地编译和 QEMU 运行结果为依据。以下是根据本次真实对话整理的代表性四段式提问示例；不是聊天原文的逐字备份。完整交互记录可按组内提交要求另存 `report/prompt.md`。
+
+### 8.1 需求分析与函数设计
+
+**[PROMPT]**：我负责 RISC-V uCore Lab4 的功能模块一，要求实现 `pmm.c` 中的 `page_insert()` 和 `page_remove()`。请结合框架实际提供的 `get_pte`、引用计数及 TLB 接口，分析映射插入、替换与删除的流程。
+
+**[RELY]**：依据实验框架 `pmm.c` 的 `get_pte()`、`get_page()`、`check_pgdir()`、`check_boot_pgdir()`，以及 `pmm.h`、`mmu.h` 中的相关类型和宏。
+
+**[GUARANTEE]**：不能覆盖已有页表代码或修改老师的测试；要防止同一物理页重复插入导致引用计数错误；无法申请页表时应返回 `-E_NO_MEM`。
+
+**[SPECIFICATION]**：给出两个函数的实现流程、带注释的 C 代码及每个关键分支的作用，并提供检查命令。
+
+### 8.2 编译错误与 Lab2 前置功能恢复
+
+**[PROMPT]**：Lab4 编译出现 `best_fit_pmm.h` 缺失、`free_list/nr_free` 未定义和 `page_init()` 警告。我已完成 Lab2，如何在不覆盖 Lab4 页表代码的情况下恢复前置功能？
+
+**[RELY]**：依据 Lab4 `default_pmm.c`、Lab2 已实现的 `default_pmm.c` 和 `pmm.c`、当前 `memlayout.h` 以及真实 `make -k` 日志。
+
+**[GUARANTEE]**：保留 `basic_check()`、`best_fit_check()` 原始测试；不把 Lab2 的整个 `pmm.c` 覆盖到 Lab4；明确移植的函数范围及测试限制。
+
+**[SPECIFICATION]**：给出恢复顺序、文件备份方式、缺失符号的原因及重新编译命令。
+
+### 8.3 模块一独立运行测试
+
+**[PROMPT]**：Lab4 已通过 C 文件编译，但链接缺少 `proc_init()`、`cpu_idle()`。如何在模块二、三尚未合并时验证我负责的页表映射模块？
+
+**[RELY]**：依据 `kern/init/init.c` 中 `pmm_init()` 的调用顺序、Makefile 的 QEMU 启动配置，以及 `check_pgdir()`、`check_boot_pgdir()` 的调用位置。
+
+**[GUARANTEE]**：只作临时测试改动；不能用空函数假装实现进程调度；测试后恢复 `init.c` 和 Makefile；不将模块一测试结果描述为全组验收通过。
+
+**[SPECIFICATION]**：给出备份、修改、编译、运行、截图保存和还原步骤，并说明各测试输出的意义。
+
