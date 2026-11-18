@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <riscv.h>
 
 /* ------------- process/thread mechanism design&implementation -------------
 (an simplified Linux process/thread mechanism )
@@ -341,4 +342,29 @@ bad_kstack:
 bad_proc:
     kfree(proc);
     return ret;
+}
+
+void
+proc_run(struct proc_struct *proc) {
+    if (proc != current) {
+        bool intr_flag;
+        struct proc_struct *prev = current;
+        local_intr_save(intr_flag);
+        current = proc;
+        if (prev->pgdir != proc->pgdir) {
+            write_csr(satp, 0x8000000000000000 | (proc->pgdir >> RISCV_PGSHIFT));
+            asm volatile("sfence.vma" ::: "memory");
+        }
+        switch_to(&(prev->context), &(proc->context));
+        local_intr_restore(intr_flag);
+    }
+}
+
+void
+cpu_idle(void) {
+    while (1) {
+        if (current->need_resched) {
+            schedule();
+        }
+    }
 }

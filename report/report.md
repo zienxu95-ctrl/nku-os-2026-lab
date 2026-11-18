@@ -21,7 +21,7 @@
 1. 理解 Sv39 页表映射、PTE 权限、物理页引用计数与 TLB 同步，完成虚拟页映射的插入和删除。
 2. 理解进程控制块的字段与生命周期，完成空闲进程和第一个内核线程的初始化。
 3. 掌握内核线程创建时 PCB、内核栈、地址空间、trapframe 与 context 的准备及失败回收流程。
-4. 理解进程调度与上下文切换所需的接口及首次运行链路；模块三的具体实现和验证待负责人补充。
+4. 理解进程调度与上下文切换所需的接口及首次运行链路，完成 `schedule()`、`proc_run()`、`cpu_idle()` 和 `switch_to()`。
 
 ## 二、实验环境
 
@@ -42,7 +42,7 @@
 |---|---|---|---|
 | 2411102-程浩轩 | ChatGPT | GPT-6 | 虚拟内存页操作、依赖排查及测试 |
 | 2411112-徐子恩 | Codex | GPT-6 | 辅助实现进程创建与初始化、检查源码及编译结果 |
-| 2410935-胡家华 | 待补充 | 待补充 | 待补充 |
+| 2410935-胡家华 | Cursor | Grok 4.7 | 辅助实现进程调度、上下文切换及 Trap 返回 |
 
 ## 三、实验整体逻辑分析
 
@@ -51,8 +51,8 @@ Lab4 在已有物理页管理和 Trap 框架上组织进程运行。模块一通
 | 模块 | 主要任务 | 实现状态 |
 |---|---|---|
 | 功能模块一：2411102-程浩轩 | `page_insert()`、`page_remove()`；页表映射、引用计数、TLB 一致性 | 已完成，独立测试通过 |
-| 功能模块二：2411112-徐子恩 | PCB 初始化、内核线程创建及 `do_fork()` | 代码已实现；整组运行结果待补充 |
-| 功能模块三：2410935-胡家华 | 空闲进程、进程切换与调度 | 待负责人补充 |
+| 功能模块二：2411112-徐子恩 | PCB 初始化、内核线程创建及 `do_fork()` | 代码已实现；整组 `make grade` 为 30/30 |
+| 功能模块三：2410935-胡家华 | 空闲进程、进程切换与调度 | 已完成 |
 
 ## 四、实验内容与实现
 
@@ -197,11 +197,11 @@ page_insert/page_remove tests finished
 ==============================
 ```
 
-> 此处 `Lab4 Module1 Test: PASS` 为**临时测试入口在 `pmm_init()` 正常返回后打印的标识**，并不是额外一套自动评分程序；主要功能证据是框架自带的 `check_pgdir()` 与 `check_boot_pgdir()` 通过。
+> 此处 `Lab4 Module1 Test: PASS` 为**临时测试入口在** `pmm_init()` **正常返回后打印的标识**，并不是额外一套自动评分程序；主要功能证据是框架自带的 `check_pgdir()` 与 `check_boot_pgdir()` 通过。
 
 ![Lab4 模块一 QEMU 独立测试结果](images/lab4_module1_pass.png)
 
-*图 1：2026-11-10 的 QEMU 运行截图。截图显示 `check_alloc_page()`、`check_pgdir()`、`check_boot_pgdir()` 和模块一测试结束标识。*
+*图 1：2026-11-10 的 QEMU 运行截图。截图显示* `check_alloc_page()`*、*`check_pgdir()`*、*`check_boot_pgdir()` *和模块一测试结束标识。*
 
 **测试覆盖情况**
 
@@ -215,7 +215,7 @@ page_insert/page_remove tests finished
 
 ### 4.2 功能模块二：进程创建与初始化
 
-**负责人：2411112-徐子恩。实现文件：`code/kern/process/proc.c`。** 本模块只准备和登记内核线程；进程被调度后的实际执行依赖模块三和 Trap 返回代码。`proc.h` 中的 `proc_struct` 包含状态、PID、内核栈、父进程、`mm`、`context`、`tf`、页表地址，以及全局链表和哈希链表节点。
+**负责人：2411112-徐子恩。实现文件：**`code/kern/process/proc.c`**。** 本模块只准备和登记内核线程；进程被调度后的实际执行依赖模块三和 Trap 返回代码。`proc.h` 中的 `proc_struct` 包含状态、PID、内核栈、父进程、`mm`、`context`、`tf`、页表地址，以及全局链表和哈希链表节点。
 
 #### 4.2.1 `alloc_proc()`：分配与初始化进程控制块
 
@@ -418,20 +418,89 @@ bad_proc:
 
 ### 4.3 功能模块三：进程调度与上下文切换
 
-**负责人：2410935-胡家华。**
+**负责人：2410935-胡家华**
 
-- 模块功能描述：待负责人补充。
-- 实现思路：待负责人补充。
-- 关键代码：待负责人补充。
+本模块把已经创建好的 `PROC_RUNNABLE` 进程真正跑起来。`cpu_idle()` 在空闲进程里循环，发现 `need_resched` 就调用 `schedule()`。`schedule()` 从当前进程在 `proc_list` 中的下一个位置开始，跳过睡眠、未初始化和僵尸进程，选出下一个可运行进程；找不到别人时，若当前进程仍可运行就继续跑自己，否则回到 `idleproc`。真正换 CPU 由 `proc_run()` 完成：更新 `current`，页表不同时重写 `satp` 并 `sfence.vma`，再调用 `switch_to()`。`switch_to()` 按 `struct context` 的顺序保存、恢复 `ra`、`sp` 和 `s0`–`s11`。新线程的 `ra` 是 `forkret`，因此第一次被调度时进入 `forkret → forkrets → __trapret → kernel_thread_entry`。
+
+`schedule()` 的选择逻辑：
+
+```c
+last = (current == idleproc) ? &proc_list : &(current->list_link);
+do {
+    if ((le = list_next(le)) != &proc_list) {
+        next = le2proc(le, list_link);
+        if (next->state == PROC_RUNNABLE) {
+            break;
+        }
+    }
+} while (le != last);
+if (next == NULL || next->state != PROC_RUNNABLE) {
+    next = (current->state == PROC_RUNNABLE) ? current : idleproc;
+}
+if (next != current) {
+    proc_run(next);
+}
+```
+
+首次运行还依赖 Lab3 留下的 Trap 返回。`trapentry.S` 中补上了 `RESTORE_ALL` 和 `__alltraps` 到 `trap()` 的调用；`trap.c` 中补上时钟中断处理，并在时钟中断里置 `need_resched`。
 
 ## 五、测试与验证
 
-待全部模块实现后补充整组运行测试结果。
+在 WSL 的 `code/` 目录执行 `make grade`，三项检查均通过：
 
-## 六、实验总结与收获
+```text
+  -check PMM:                                OK
+  -check Process Create:                     OK
+  -check Schedule:                           OK
+Total Score: 30/30
+```
+
+调度检查同时要求出现 `this initproc, pid = 1, name = "init"`、`To U: "Hello world!!".` 和 `To U: "en.., Bye, Bye. :)"`。本机 OpenSBI 不能用 `-device loader` 进入内核，因此 `Makefile` 和 `tools/grade.sh` 改为 `-kernel bin/ucore.img`。`kmalloc.c` 把整数地址传给 `kva2page(void *)` 会触发 `-Werror`，已改为 `(void *)kva`。评分线程原来返回 `void`，与 `kernel_thread(int (*)(void *))` 不一致，只把 `tools/test_lab4.c` 中该函数改成 `int` 并补上 `return 0`，断言没有改。
+
+## 六、扩展练习
+
+### 6.1 `local_intr_save` / `local_intr_restore` 如何开关中断
+
+`schedule()`、`proc_run()` 和 `do_fork()` 修改进程链表、`current` 或页表时，都包在下面这对语句里：
+
+```c
+local_intr_save(intr_flag);
+/* 临界区 */
+local_intr_restore(intr_flag);
+```
+
+实现在 `code/kern/sync/sync.h`。`local_intr_save(intr_flag)` 把 `__intr_save()` 的返回值存进 `intr_flag`。`__intr_save()` 读取 `sstatus`，检查 `SSTATUS_SIE`（第 1 位）。该位为 1 表示当前 S 态允许响应中断，函数调用 `intr_disable()`，也就是 `clear_csr(sstatus, SSTATUS_SIE)`，把这一位清 0，并返回 1。该位已经是 0 时，函数不改寄存器，返回 0。
+
+`local_intr_restore(intr_flag)` 只有在 `intr_flag` 为 1 时才调用 `intr_enable()`，即 `set_csr(sstatus, SSTATUS_SIE)`。进入临界区前中断本来就是关闭的，退出后仍然关闭。
+
+因此它可以嵌套。内层看到 SIE 已经是 0，保存的标志是 0，内层恢复不会打开中断；只有最外层保存到的 1 才会重新置位。陷入内核时，硬件已经把 SIE 清 0，并把原来的值留在 SPIE。这时 `local_intr_save` 得到 0，临界区结束不会提前开中断，真正恢复发生在 `sret` 把 SPIE 写回 SIE 的时候。
+
+调度需要这个临界区。`schedule()` 正在改 `need_resched`、选择下一个进程并切换 `current` 时，如果时钟中断进来再次调用 `schedule()`，进程指针和 `switch_to()` 保存的寄存器现场会对不上。
+
+### 6.2 分页模式与 `get_pte()`
+
+`get_pte()` 在 `code/kern/mm/pmm.c`。它从根页表 `pgdir` 出发，先用 `PDX1(la)` 走一级，再用 `PDX0(la)` 走一级，最后返回 `PTX(la)` 对应的叶子页表项地址。前两级的代码几乎一样：页表项没有 `PTE_V` 时，若 `create` 为真就分配一页、引用计数设为 1、整页清零，并写成指向下一级的页表项；然后用 `PDE_ADDR` 取出下一级页表的物理地址，经 `KADDR` 转成内核虚拟地址再继续索引。
+
+Sv32、Sv39、Sv48 都是基数页表，页大小都是 4KiB，页内偏移都是虚拟地址的低 12 位。非叶子页表项都不带 R/W/X，里面的物理页号指向下一级页表。差别是地址宽度、级数和每一级索引占多少位：
+
+| 模式 | 虚拟地址 | `satp.MODE` | 级数 | 每一级索引 |
+|---|---|---|---|---|
+| Sv32 | 32 位，只用于 RV32 | 1 | 2 | 10 位，每页 1024 个 4 字节页表项 |
+| Sv39 | 39 位，高位按符号扩展 | 8 | 3 | 9 位，每页 512 个 8 字节页表项 |
+| Sv48 | 48 位，高位按符号扩展 | 9 | 4 | 9 位，每页 512 个 8 字节页表项 |
+
+本实验 `mmu.h` 中 `PDX1SHIFT` 是 30，`PDX0SHIFT` 是 21，`PTXSHIFT` 是 12，掩码都是 `0x1FF`。这三项就是 Sv39 的 VPN[2]、VPN[1]、VPN[0]。Sv39 和 Sv48 的每一级都占满一页，索引都是 9 位，页表项格式也相同，所以“检查有效位、按需分配并清零、装上下一级指针”在每一级都成立。`get_pte()` 里那两段代码只是把 VPN[2] 和 VPN[1] 各写了一遍。Sv48 还要再写一段处理 VPN[3]。Sv32 只有一级非叶子页表，索引是 10 位，页表项是 4 字节，不会是现在这种两段 9 位拷贝。叶子一级不再分配页表，只按 `PTX(la)` 算出位置并返回，所以没有第三段同样的代码。
+
+把查找和分配放在同一个 `get_pte()` 里，对现在的调用者是合适的。`page_insert()` 传入 `create=1`，缺中间页表时直接得到叶子项；`page_remove()` 传入 `create=0`，缺页表就返回空，不会为了删除去新建页表。调用者不用自己再走一遍多级页表。
+
+两段几乎相同的语句会随着页表级数继续复制。更合适的做法是仍然只对外提供 `get_pte()`，在函数内部按移位循环处理每一级，而不是拆成“查找函数”和“分配函数”两个公开接口。拆开之后，`page_insert()` 还是要把两次操作串起来，接口变多，页表行走的规则并没有少。
+
+当前写法还有一个失败路径：VPN[2] 那一页已经分配并挂上，VPN[1] 再分配失败时，函数直接返回 `NULL`，刚分配的页表页不会释放。把函数拆成两个公开接口也不能自动补上这次回收。若要修改，应仍在这一次 `get_pte()` 调用中记下新分配的页，失败时释放它们。
+
+## 七、实验总结与收获
 
 1. **虚拟内存页操作：** 模块一通过 `get_pte()` 定位叶子 PTE，在插入、替换和删除映射时同时维护权限、物理页引用计数及 TLB 一致性。独立测试中，`check_pgdir()` 与 `check_boot_pgdir()` 通过，帮助小组将页表操作与后续进程地址空间管理联系起来。
 2. **进程创建与初始化：** 模块二梳理了 PCB、内核栈和地址空间的分工：PCB 记录 PID、状态及进程关系；每个新内核线程拥有自己的内核栈，但当前阶段共用启动页表。`PROC_UNINIT` 只有在资源、trapframe 和 context 均准备完毕、PID 已登记后才转为 `PROC_RUNNABLE`。`context` 服务于内核上下文切换，`trapframe` 服务于首次寄存器恢复；两者通过 `forkret` 和 `forkrets` 衔接。
-3. **AI 辅助开发经验：** AI 工具用于分析接口、组织实现步骤和排查编译问题；报告中的代码与结论仍以当前源码及模块一已有的独立测试记录核对，不延伸为整组验收结论。
-4. **模块三与整组最终总结：** 待负责人和小组在实现、联合编译及运行验证后补充。
+3. **调度与切换：** 模块三用链表轮转选择下一个 `PROC_RUNNABLE` 进程，`switch_to()` 只保存被调用者寄存器。新内核线程第一次运行不回到旧的 C 调用点，而是从 `forkret` 进入 Trap 返回，再跳到 `kernel_thread_entry`。
+4. **扩展练习：** `local_intr_save/restore` 按进入临界区前的 `sstatus.SIE` 关闭并恢复 S 态中断，可以嵌套。`get_pte()` 中两段相似代码对应 Sv39 的两级非叶子页表；查找和分配保持在同一个函数里，适合现在的调用方式。
 

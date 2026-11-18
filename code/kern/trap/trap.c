@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <trap.h>
 #include <vmm.h>
+#include <proc.h>
 
 #define TICK_NUM 100
 
@@ -85,7 +86,52 @@ extern struct mm_struct *check_mm_struct;
 
 //lab3 请补充你在lab3中的代码
 
+static inline void advance_sepc(struct trapframe *tf) {
+    uint16_t insn = *(uint16_t *)tf->epc;
+    if ((insn & 0x3) != 0x3) {
+        tf->epc += 2;
+    } else {
+        tf->epc += 4;
+    }
+}
 
+void interrupt_handler(struct trapframe *tf) {
+    uintptr_t irq = tf->cause & (((uintptr_t)1 << 63) - 1);
+
+    switch (irq) {
+    case IRQ_S_TIMER:
+        clock_set_next_event();
+        ticks++;
+        if (current != NULL) {
+            current->need_resched = 1;
+        }
+        if (ticks % TICK_NUM == 0) {
+            print_ticks();
+        }
+        break;
+    default:
+        print_trapframe(tf);
+        break;
+    }
+}
+
+void exception_handler(struct trapframe *tf) {
+    switch (tf->cause) {
+    case CAUSE_ILLEGAL_INSTRUCTION:
+        cprintf("Exception type: Illegal instruction\n");
+        cprintf("Illegal instruction at 0x%016lx\n", tf->epc);
+        advance_sepc(tf);
+        break;
+    case CAUSE_BREAKPOINT:
+        cprintf("Exception type: Breakpoint\n");
+        cprintf("Breakpoint at 0x%016lx\n", tf->epc);
+        advance_sepc(tf);
+        break;
+    default:
+        print_trapframe(tf);
+        break;
+    }
+}
 
 /* *
  * trap - handles or dispatches an exception/interrupt. if and when trap()
