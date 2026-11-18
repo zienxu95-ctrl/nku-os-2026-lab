@@ -457,6 +457,10 @@ Total Score: 30/30
 
 调度检查同时要求出现 `this initproc, pid = 1, name = "init"`、`To U: "Hello world!!".` 和 `To U: "en.., Bye, Bye. :)"`。本机 OpenSBI 不能用 `-device loader` 进入内核，因此 `Makefile` 和 `tools/grade.sh` 改为 `-kernel bin/ucore.img`。`kmalloc.c` 把整数地址传给 `kva2page(void *)` 会触发 `-Werror`，已改为 `(void *)kva`。评分线程原来返回 `void`，与 `kernel_thread(int (*)(void *))` 不一致，只把 `tools/test_lab4.c` 中该函数改成 `int` 并补上 `return 0`，断言没有改。
 
+![Lab4 make grade 结果](images/lab4_grade_30.png)
+
+*图 2：在 WSL 的 `code/` 目录执行 `make grade` 的结果。物理内存、进程创建和调度三项均为 OK，总分为 30/30。*
+
 ## 六、扩展练习
 
 ### 6.1 `local_intr_save` / `local_intr_restore` 如何开关中断
