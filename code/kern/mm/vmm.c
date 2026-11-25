@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <error.h>
 #include <pmm.h>
+#include <mmu.h>
 #include <riscv.h>
 #include <kmalloc.h>
 
@@ -227,6 +228,57 @@ int dup_mmap(struct mm_struct *to, struct mm_struct *from)
         }
     }
     unlock_mm(from);
+    return ret;
+}
+
+int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
+{
+    int ret = -E_INVAL;
+    if (mm == NULL) {
+        return ret;
+    }
+    lock_mm(mm);
+
+    struct vma_struct *vma = find_vma(mm, addr);
+    bool write = (error_code == 15);
+    if (vma == NULL || vma->vm_start > addr) {
+        goto out;
+    }
+    if (write && !(vma->vm_flags & VM_WRITE)) {
+        goto out;
+    }
+    if (!write && !(vma->vm_flags & (VM_READ | VM_EXEC))) {
+        goto out;
+    }
+
+    uintptr_t la = ROUNDDOWN(addr, PGSIZE);
+    pte_t *ptep = get_pte(mm->pgdir, la, 0);
+    if (ptep == NULL || !(*ptep & PTE_V) || !(*ptep & PTE_COW) || !write) {
+        goto out;
+    }
+
+    struct Page *page = pte2page(*ptep);
+    uint32_t perm = (*ptep & (PTE_R | PTE_X | PTE_U | PTE_G)) | PTE_W;
+    if (page_ref(page) == 1) {
+        *ptep = (*ptep & ~((pte_t)PTE_COW)) | PTE_W;
+        tlb_invalidate(mm->pgdir, la);
+        ret = 0;
+        goto out;
+    }
+
+    struct Page *npage = alloc_page();
+    if (npage == NULL) {
+        ret = -E_NO_MEM;
+        goto out;
+    }
+    memcpy(page2kva(npage), page2kva(page), PGSIZE);
+    ret = page_insert(mm->pgdir, npage, la, perm);
+    if (ret != 0) {
+        free_page(npage);
+    }
+
+out:
+    unlock_mm(mm);
     return ret;
 }
 

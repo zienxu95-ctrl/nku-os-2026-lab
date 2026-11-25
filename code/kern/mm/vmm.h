@@ -41,6 +41,7 @@ struct mm_struct
 };
 
 struct vma_struct *find_vma(struct mm_struct *mm, uintptr_t addr);
+int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr);
 struct vma_struct *vma_create(uintptr_t vm_start, uintptr_t vm_end, uint32_t vm_flags);
 void insert_vma_struct(struct mm_struct *mm, struct vma_struct *vma);
 

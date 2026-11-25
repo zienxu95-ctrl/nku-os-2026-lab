@@ -389,8 +389,9 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
 
 
 // Copy user mappings in [start, end) from one page directory to another.
-// When share is false (fork), allocate independent physical pages and copy
-// their contents. When share is true, install the same pages with refcounts.
+// share == true keeps the original permissions and the same physical page.
+// share == false is user fork: writable pages become shared and read-only,
+// and a later write fault copies the page. Read-only pages are shared as-is.
 int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share)
 {
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
@@ -405,25 +406,18 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
         }
 
         struct Page *src_page = pte2page(*ptep);
-        uint32_t perm = *ptep & (PTE_R | PTE_W | PTE_X | PTE_U | PTE_G | PTE_A | PTE_D);
-        struct Page *dst_page = src_page;
+        uint32_t perm = *ptep & (PTE_R | PTE_W | PTE_X | PTE_U | PTE_G | PTE_A | PTE_D | PTE_COW);
 
-        if (!share)
+        if (!share && (perm & (PTE_W | PTE_COW)))
         {
-            if ((dst_page = alloc_page()) == NULL)
-            {
-                return -E_NO_MEM;
-            }
-            memcpy(page2kva(dst_page), page2kva(src_page), PGSIZE);
+            perm = (perm & ~PTE_W) | PTE_COW;
+            *ptep = (*ptep & ~((pte_t)PTE_W)) | PTE_COW;
+            tlb_invalidate(from, la);
         }
 
-        int ret = page_insert(to, dst_page, la, perm);
+        int ret = page_insert(to, src_page, la, perm);
         if (ret != 0)
         {
-            if (!share)
-            {
-                free_page(dst_page);
-            }
             return ret;
         }
     }

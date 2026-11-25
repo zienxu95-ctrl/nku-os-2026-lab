@@ -122,6 +122,18 @@ static void exception_handler(struct trapframe *tf) {
     case 3: /* breakpoint */
         tf->epc += ((*(uint16_t *)(tf->epc) & 3) == 3) ? 4 : 2;
         break;
+    case 12: /* instruction page fault */
+    case 13: /* load page fault */
+    case 15: /* store/AMO page fault */
+        if (current != NULL && current->mm != NULL &&
+            do_pgfault(current->mm, (uint32_t)tf->cause, tf->tval) == 0) {
+            break;
+        }
+        cprintf("page fault: cause=%lx epc=%lx tval=%lx\n",
+                tf->cause, tf->epc, tf->tval);
+        if (current != NULL && !trap_in_kernel(tf)) do_exit(-E_FAULT);
+        panic("unhandled page fault");
+        break;
     default:
         cprintf("unhandled exception: cause=%lx epc=%lx tval=%lx\n",
                 tf->cause, tf->epc, tf->tval);

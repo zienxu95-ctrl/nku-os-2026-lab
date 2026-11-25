@@ -184,6 +184,7 @@
 #define PTE_A 0x040    // Accessed
 #define PTE_D 0x080    // Dirty
 #define PTE_SOFT 0x300 // Reserved for Software
+#define PTE_COW 0x100  // software bit: shared page, copy on write
 
 #define PTE_PPN_SHIFT 10
 
